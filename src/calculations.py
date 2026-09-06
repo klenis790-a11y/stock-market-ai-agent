@@ -1,4 +1,29 @@
-from src.models import BalanceSheetPeriod, CashFlowPeriod, IncomeStatementPeriod
+from src.models import BalanceSheetPeriod, CashFlowPeriod, EarningsPeriod, IncomeStatementPeriod
+
+
+def calculate_earnings_metrics(periods: list[EarningsPeriod]) -> dict:
+    """Summarize up to four periods supplied newest first."""
+    recent = periods[:4]
+    surprises = [
+        period.surprise_percentage
+        for period in recent
+        if period.surprise_percentage is not None
+    ]
+    beats = 0
+    misses = 0
+    for period in recent:
+        if period.reported_eps is None or period.estimated_eps is None:
+            continue
+        if period.reported_eps > period.estimated_eps:
+            beats += 1
+        elif period.reported_eps < period.estimated_eps:
+            misses += 1
+    return {
+        "latest_surprise_percentage": recent[0].surprise_percentage if recent else None,
+        "average_surprise_percentage": sum(surprises) / len(surprises) if surprises else None,
+        "beats_last_4_quarters": beats,
+        "misses_last_4_quarters": misses,
+    }
 
 
 def calculate_free_cash_flow(
