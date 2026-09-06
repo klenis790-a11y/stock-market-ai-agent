@@ -4,6 +4,7 @@ from math import isfinite
 from src.models import (
     BalanceSheetPeriod,
     CashFlowPeriod,
+    EarningsPeriod,
     IncomeStatementPeriod,
     StockResearchData,
 )
@@ -70,6 +71,32 @@ def normalize_annual_cash_flows(
         )
         for report in reports[:max(0, limit)]
     ]
+
+
+def normalize_quarterly_earnings(
+    data: dict, limit: int = 4
+) -> list[EarningsPeriod]:
+    records = data.get("quarterlyEarnings")
+    if not isinstance(records, list):
+        return []
+    periods = []
+    for record in records[:max(0, limit)]:
+        reported_date = record.get("reportedDate")
+        if reported_date is not None:
+            reported_date = str(reported_date)
+            if reported_date.strip() in ("", "None", "-"):
+                reported_date = None
+        periods.append(
+            EarningsPeriod(
+                fiscal_date_ending=str(record.get("fiscalDateEnding") or ""),
+                reported_date=reported_date,
+                reported_eps=_to_float(record.get("reportedEPS")),
+                estimated_eps=_to_float(record.get("estimatedEPS")),
+                surprise=_to_float(record.get("surprise")),
+                surprise_percentage=_to_float(record.get("surprisePercentage")),
+            )
+        )
+    return periods
 
 
 def normalize_company_overview(data: dict) -> StockResearchData:

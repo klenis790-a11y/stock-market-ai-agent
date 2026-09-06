@@ -28,6 +28,16 @@ class CashFlowPeriod:
 
 
 @dataclass
+class EarningsPeriod:
+    fiscal_date_ending: str
+    reported_date: str | None = None
+    reported_eps: float | None = None
+    estimated_eps: float | None = None
+    surprise: float | None = None
+    surprise_percentage: float | None = None
+
+
+@dataclass
 class StockResearchData:
     ticker: str
     company_name: str
