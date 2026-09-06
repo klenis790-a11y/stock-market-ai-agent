@@ -2,6 +2,14 @@ from dataclasses import dataclass, field
 
 
 @dataclass
+class IncomeStatementPeriod:
+    fiscal_date_ending: str
+    total_revenue: float | None = None
+    operating_income: float | None = None
+    net_income: float | None = None
+
+
+@dataclass
 class StockResearchData:
     ticker: str
     company_name: str
