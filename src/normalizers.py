@@ -1,7 +1,12 @@
 from datetime import datetime, timezone
 from math import isfinite
 
-from src.models import BalanceSheetPeriod, IncomeStatementPeriod, StockResearchData
+from src.models import (
+    BalanceSheetPeriod,
+    CashFlowPeriod,
+    IncomeStatementPeriod,
+    StockResearchData,
+)
 
 
 def _to_float(value: object) -> float | None:
@@ -46,6 +51,22 @@ def normalize_annual_balance_sheets(
             long_term_debt=_to_float(report.get("longTermDebt")),
             total_debt=_to_float(report.get("shortLongTermDebtTotal")),
             shareholder_equity=_to_float(report.get("totalShareholderEquity")),
+        )
+        for report in reports[:max(0, limit)]
+    ]
+
+
+def normalize_annual_cash_flows(
+    data: dict, limit: int = 3
+) -> list[CashFlowPeriod]:
+    reports = data.get("annualReports")
+    if not isinstance(reports, list):
+        return []
+    return [
+        CashFlowPeriod(
+            fiscal_date_ending=str(report.get("fiscalDateEnding") or ""),
+            operating_cash_flow=_to_float(report.get("operatingCashflow")),
+            capital_expenditures=_to_float(report.get("capitalExpenditures")),
         )
         for report in reports[:max(0, limit)]
     ]

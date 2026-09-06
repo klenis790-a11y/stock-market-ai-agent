@@ -21,6 +21,13 @@ class BalanceSheetPeriod:
 
 
 @dataclass
+class CashFlowPeriod:
+    fiscal_date_ending: str
+    operating_cash_flow: float | None = None
+    capital_expenditures: float | None = None
+
+
+@dataclass
 class StockResearchData:
     ticker: str
     company_name: str
