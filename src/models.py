@@ -66,9 +66,11 @@ class ResearchSnapshot:
     income_statements: list[IncomeStatementPeriod]
     balance_sheets: list[BalanceSheetPeriod]
     cash_flows: list[CashFlowPeriod]
+    earnings: list[EarningsPeriod]
     income_statement_metrics: dict[str, float | None]
     balance_sheet_metrics: dict[str, float | None]
     cash_flow_metrics: dict[str, float | None]
+    earnings_metrics: dict[str, float | int | None]
     missing_data: list[str]
     source: str
     generated_at: str
