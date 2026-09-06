@@ -6,6 +6,7 @@ from src.models import (
     CashFlowPeriod,
     EarningsPeriod,
     IncomeStatementPeriod,
+    NewsItem,
     StockResearchData,
 )
 
@@ -16,6 +17,52 @@ def _to_float(value: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
+
+
+def normalize_relevant_news(
+    data: dict,
+    ticker: str,
+    limit: int = 5,
+    min_relevance_score: float = 0.5,
+) -> list[NewsItem]:
+    feed = data.get("feed")
+    if not isinstance(feed, list) or limit <= 0:
+        return []
+    items = []
+    for article in feed:
+        if not isinstance(article, dict):
+            continue
+        title = article.get("title")
+        if not isinstance(title, str) or not title.strip():
+            continue
+        entries = article.get("ticker_sentiment")
+        if not isinstance(entries, list):
+            continue
+        relevance = None
+        for entry in entries:
+            if (
+                isinstance(entry, dict)
+                and isinstance(entry.get("ticker"), str)
+                and entry["ticker"].casefold() == ticker.casefold()
+            ):
+                relevance = _to_float(entry.get("relevance_score"))
+                break
+        if relevance is None or relevance < min_relevance_score:
+            continue
+        optional_fields = {}
+        for name in ("source", "time_published", "url"):
+            value = article.get(name)
+            optional_fields[name] = (
+                value if isinstance(value, str) and value.strip() else None
+            )
+        items.append(NewsItem(
+            title=title,
+            ticker_relevance_score=relevance,
+            **optional_fields,
+        ))
+        if len(items) == limit:
+            break
+    return items
 
 
 def normalize_annual_income_statements(

@@ -38,6 +38,15 @@ class EarningsPeriod:
 
 
 @dataclass
+class NewsItem:
+    title: str
+    source: str | None = None
+    time_published: str | None = None
+    url: str | None = None
+    ticker_relevance_score: float | None = None
+
+
+@dataclass
 class StockResearchData:
     ticker: str
     company_name: str
