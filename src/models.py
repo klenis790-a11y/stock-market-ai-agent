@@ -84,3 +84,34 @@ class ResearchSnapshot:
     missing_data: list[str]
     source: str
     generated_at: str
+
+
+@dataclass
+class AnalysisStatement:
+    """Statement type: retrieved_fact, calculated_metric, ai_interpretation, or forecast."""
+
+    text: str
+    statement_type: str
+    evidence_refs: list[str] = field(default_factory=list)
+
+
+@dataclass
+class InvestmentAnalysis:
+    """Report contract; recommendation: Buy, Accumulate, Hold, Trim, or Avoid.
+
+    confidence_score is a 0-100 score. No validation or scoring is performed.
+    """
+
+    ticker: str
+    recommendation: str
+    confidence_score: float
+    fundamental_assessment: str
+    valuation_assessment: str
+    earnings_assessment: str
+    bull_case: list[AnalysisStatement]
+    bear_case: list[AnalysisStatement]
+    supporting_evidence: list[AnalysisStatement]
+    major_risks: list[AnalysisStatement]
+    thesis_invalidation_conditions: list[AnalysisStatement]
+    missing_data: list[str]
+    reasoning_summary: str
