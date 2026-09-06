@@ -26,12 +26,18 @@ def get_earnings(ticker: str) -> dict:
     return _request("EARNINGS", ticker)
 
 
-def _request(function: str, ticker: str) -> dict:
+def get_news_sentiment(ticker: str) -> dict:
+    return _request("NEWS_SENTIMENT", tickers=ticker, limit=10, sort="LATEST")
+
+
+def _request(function: str, ticker: str | None = None, **params: str | int) -> dict:
     api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     if not api_key or not api_key.strip():
         raise RuntimeError("ALPHA_VANTAGE_API_KEY must be configured.")
 
-    query = urlencode({"function": function, "symbol": ticker, "apikey": api_key})
+    if ticker is not None:
+        params["symbol"] = ticker
+    query = urlencode({**params, "function": function, "apikey": api_key})
     try:
         with urlopen(f"https://www.alphavantage.co/query?{query}", timeout=30) as response:
             data = json.load(response)
