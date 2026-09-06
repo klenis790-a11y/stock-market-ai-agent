@@ -14,6 +14,10 @@ def get_income_statement(ticker: str) -> dict:
     return _request("INCOME_STATEMENT", ticker)
 
 
+def get_balance_sheet(ticker: str) -> dict:
+    return _request("BALANCE_SHEET", ticker)
+
+
 def _request(function: str, ticker: str) -> dict:
     api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     if not api_key or not api_key.strip():
