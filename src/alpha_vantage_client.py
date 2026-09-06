@@ -7,11 +7,19 @@ from urllib.request import urlopen
 
 
 def get_company_overview(ticker: str) -> dict:
+    return _request("OVERVIEW", ticker)
+
+
+def get_income_statement(ticker: str) -> dict:
+    return _request("INCOME_STATEMENT", ticker)
+
+
+def _request(function: str, ticker: str) -> dict:
     api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     if not api_key or not api_key.strip():
         raise RuntimeError("ALPHA_VANTAGE_API_KEY must be configured.")
 
-    query = urlencode({"function": "OVERVIEW", "symbol": ticker, "apikey": api_key})
+    query = urlencode({"function": function, "symbol": ticker, "apikey": api_key})
     try:
         with urlopen(f"https://www.alphavantage.co/query?{query}", timeout=30) as response:
             data = json.load(response)
@@ -31,5 +39,5 @@ def get_company_overview(ticker: str) -> dict:
                 "check API access and rate limits."
             )
     if not data:
-        raise RuntimeError("Alpha Vantage returned no company overview data.")
+        raise RuntimeError(f"Alpha Vantage returned no data for {function}.")
     return data
