@@ -48,3 +48,17 @@ class StockResearchData:
     latest_earnings_eps: float | None = None
     guidance: str | None = None
     recent_news: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ResearchSnapshot:
+    stock: StockResearchData
+    income_statements: list[IncomeStatementPeriod]
+    balance_sheets: list[BalanceSheetPeriod]
+    cash_flows: list[CashFlowPeriod]
+    income_statement_metrics: dict[str, float | None]
+    balance_sheet_metrics: dict[str, float | None]
+    cash_flow_metrics: dict[str, float | None]
+    missing_data: list[str]
+    source: str
+    generated_at: str
