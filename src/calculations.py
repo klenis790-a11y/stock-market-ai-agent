@@ -1,4 +1,49 @@
-from src.models import BalanceSheetPeriod, IncomeStatementPeriod
+from src.models import BalanceSheetPeriod, CashFlowPeriod, IncomeStatementPeriod
+
+
+def calculate_free_cash_flow(
+    operating_cash_flow: float | None, capital_expenditures: float | None
+) -> float | None:
+    if operating_cash_flow is None or capital_expenditures is None:
+        return None
+    return operating_cash_flow - capital_expenditures
+
+
+def calculate_cash_flow_metrics(
+    cash_flow_periods: list[CashFlowPeriod],
+    income_statement_periods: list[IncomeStatementPeriod],
+) -> dict:
+    """Use newest-first cash flows and revenue from the matching fiscal date."""
+    metrics = {
+        "free_cash_flow": None,
+        "free_cash_flow_growth": None,
+        "free_cash_flow_margin": None,
+    }
+    if not cash_flow_periods:
+        return metrics
+
+    newest = cash_flow_periods[0]
+    free_cash_flow = calculate_free_cash_flow(
+        newest.operating_cash_flow, newest.capital_expenditures
+    )
+    metrics["free_cash_flow"] = free_cash_flow
+    if len(cash_flow_periods) >= 2:
+        previous = cash_flow_periods[1]
+        previous_free_cash_flow = calculate_free_cash_flow(
+            previous.operating_cash_flow, previous.capital_expenditures
+        )
+        metrics["free_cash_flow_growth"] = calculate_growth_rate(
+            free_cash_flow, previous_free_cash_flow
+        )
+
+    if newest.fiscal_date_ending:
+        for period in income_statement_periods:
+            if period.fiscal_date_ending == newest.fiscal_date_ending:
+                metrics["free_cash_flow_margin"] = calculate_ratio(
+                    free_cash_flow, period.total_revenue
+                )
+                break
+    return metrics
 
 
 def calculate_ratio(
