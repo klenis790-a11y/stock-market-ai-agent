@@ -76,6 +76,7 @@ class ResearchSnapshot:
     balance_sheets: list[BalanceSheetPeriod]
     cash_flows: list[CashFlowPeriod]
     earnings: list[EarningsPeriod]
+    news: list[NewsItem]
     income_statement_metrics: dict[str, float | None]
     balance_sheet_metrics: dict[str, float | None]
     cash_flow_metrics: dict[str, float | None]

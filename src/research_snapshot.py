@@ -11,6 +11,7 @@ from src.models import (
     CashFlowPeriod,
     EarningsPeriod,
     IncomeStatementPeriod,
+    NewsItem,
     ResearchSnapshot,
     StockResearchData,
 )
@@ -22,6 +23,7 @@ def build_research_snapshot(
     balance_sheets: list[BalanceSheetPeriod],
     cash_flows: list[CashFlowPeriod],
     earnings: list[EarningsPeriod],
+    news: list[NewsItem],
 ) -> ResearchSnapshot:
     income_metrics = calculate_income_statement_metrics(income_statements)
     balance_metrics = calculate_balance_sheet_metrics(balance_sheets)
@@ -29,6 +31,8 @@ def build_research_snapshot(
     earnings_metrics = calculate_earnings_metrics(earnings)
 
     missing_data = []
+    if not news:
+        missing_data.append("Recent relevant news unavailable")
     for name in (
         "current_price", "market_cap", "pe_ratio", "forward_pe",
         "price_to_sales", "ev_to_ebitda",
@@ -56,6 +60,7 @@ def build_research_snapshot(
         balance_sheets=balance_sheets,
         cash_flows=cash_flows,
         earnings=earnings,
+        news=news,
         income_statement_metrics=income_metrics,
         balance_sheet_metrics=balance_metrics,
         cash_flow_metrics=cash_metrics,
