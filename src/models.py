@@ -10,6 +10,17 @@ class IncomeStatementPeriod:
 
 
 @dataclass
+class BalanceSheetPeriod:
+    fiscal_date_ending: str
+    cash_and_cash_equivalents: float | None = None
+    total_assets: float | None = None
+    total_liabilities: float | None = None
+    long_term_debt: float | None = None
+    total_debt: float | None = None
+    shareholder_equity: float | None = None
+
+
+@dataclass
 class StockResearchData:
     ticker: str
     company_name: str
