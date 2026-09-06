@@ -1,4 +1,12 @@
-from src.models import IncomeStatementPeriod
+from src.models import BalanceSheetPeriod, IncomeStatementPeriod
+
+
+def calculate_ratio(
+    numerator: float | None, denominator: float | None
+) -> float | None:
+    if numerator is None or denominator is None or denominator == 0:
+        return None
+    return numerator / denominator
 
 
 def calculate_growth_rate(
@@ -12,9 +20,7 @@ def calculate_growth_rate(
 def calculate_margin(
     income: float | None, revenue: float | None
 ) -> float | None:
-    if income is None or revenue is None or revenue == 0:
-        return None
-    return income / revenue
+    return calculate_ratio(income, revenue)
 
 
 def calculate_income_statement_metrics(
@@ -44,3 +50,25 @@ def calculate_income_statement_metrics(
             newest.net_income, previous.net_income
         )
     return metrics
+
+
+def calculate_balance_sheet_metrics(periods: list[BalanceSheetPeriod]) -> dict:
+    """Calculate ratios from the first period; periods must be newest first."""
+    if not periods:
+        return {
+            "debt_to_equity": None,
+            "liabilities_to_assets": None,
+            "cash_to_debt": None,
+        }
+    newest = periods[0]
+    return {
+        "debt_to_equity": calculate_ratio(
+            newest.total_debt, newest.shareholder_equity
+        ),
+        "liabilities_to_assets": calculate_ratio(
+            newest.total_liabilities, newest.total_assets
+        ),
+        "cash_to_debt": calculate_ratio(
+            newest.cash_and_cash_equivalents, newest.total_debt
+        ),
+    }
