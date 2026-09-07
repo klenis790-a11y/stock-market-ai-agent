@@ -15,7 +15,7 @@ def request_text(*, input: str, max_output_tokens: int, **options) -> str:
         with OpenAI(
             api_key=api_key,
             base_url="https://api.openai.com/v1",
-            timeout=30.0,
+            timeout=120.0,
             max_retries=0,
         ) as client:
             response = client.responses.create(
