@@ -64,10 +64,20 @@ def _request(function: str, ticker: str | None = None, **params: str | int) -> d
         raise RuntimeError("Alpha Vantage returned an unexpected response format.")
     for message_key in ("Error Message", "Note", "Information"):
         if message_key in data:
-            raise RuntimeError(
-                f"Alpha Vantage returned {message_key}: API error or request limit; "
-                "check API access and rate limits."
-            )
+            message = data[message_key]
+            if not isinstance(message, str):
+                message = "Non-text API error message."
+            # Provider messages may echo credentials. Never render request URLs.
+            message = re.sub(r"https?://\S+", "[URL REDACTED]", message, flags=re.I)
+            secrets = [
+                value for name, value in os.environ.items()
+                if value and any(marker in name.upper() for marker in (
+                    "KEY", "TOKEN", "SECRET", "PASSWORD", "AUTHORIZATION",
+                ))
+            ]
+            for secret in sorted(secrets, key=len, reverse=True):
+                message = message.replace(secret, "[REDACTED]")
+            raise RuntimeError(f"Alpha Vantage {message_key}: {message}")
     if not data:
         raise RuntimeError(f"Alpha Vantage returned no data for {function}.")
     return data
