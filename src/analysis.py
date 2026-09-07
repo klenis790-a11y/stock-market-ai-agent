@@ -1,5 +1,6 @@
 import json
 import math
+import os
 
 from src.models import AnalysisStatement, InvestmentAnalysis
 from src.openai_client import request_text
@@ -66,6 +67,20 @@ company identity or facts outside that test evidence.
 """
 
 
+def _reference_error(paths: list[str]) -> ValueError:
+    # References are model output: redact any echoed configuration secrets.
+    secrets = sorted((value for name, value in os.environ.items() if value and any(
+        marker in name.upper() for marker in ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTHORIZATION")
+    )), key=len, reverse=True)
+    safe_paths = []
+    for path in paths:
+        for secret in secrets:
+            path = path.replace(secret, "[REDACTED]")
+        safe_paths.append(json.dumps(path, ensure_ascii=False))
+    label = "reference" if len(paths) == 1 else "references"
+    return ValueError(f"Analysis contains invalid evidence {label}: {', '.join(safe_paths)}")
+
+
 def _resolve_reference(evidence: dict, path: str):
     value = evidence
     for part in path.split("."):
@@ -74,10 +89,10 @@ def _resolve_reference(evidence: dict, path: str):
         elif isinstance(value, list) and part.isascii() and part.isdigit():
             index = int(part)
             if str(index) != part or index >= len(value):
-                raise ValueError("Analysis contains an invalid evidence reference.")
+                raise _reference_error([path])
             value = value[index]
         else:
-            raise ValueError("Analysis contains an invalid evidence reference.")
+            raise _reference_error([path])
     return value
 
 
@@ -95,6 +110,7 @@ def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
     if type(score) not in (int, float) or not math.isfinite(score) or not 0 <= score <= 100:
         raise ValueError("Analysis confidence_score must be between 0 and 100.")
     result = dict(data)
+    invalid_refs = []
     for name in STATEMENT_LISTS:
         if not isinstance(data[name], list):
             raise ValueError(f"Analysis {name} must be a list.")
@@ -112,11 +128,18 @@ def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
             if prefix and not refs:
                 raise ValueError("Fact and metric statements require evidence references.")
             for ref in refs:
-                value = _resolve_reference(evidence, ref)
+                try:
+                    value = _resolve_reference(evidence, ref)
+                except ValueError:
+                    if ref not in invalid_refs:
+                        invalid_refs.append(ref)
+                    continue
                 if prefix and (not ref.startswith(prefix) or value is None):
                     raise ValueError("Evidence reference does not support the statement category.")
             statements.append(AnalysisStatement(**{**statement, "evidence_refs": list(refs)}))
         result[name] = statements
+    if invalid_refs:
+        raise _reference_error(invalid_refs)
     missing = data["missing_data"]
     if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
         raise ValueError("Analysis missing_data must be a list of strings.")
