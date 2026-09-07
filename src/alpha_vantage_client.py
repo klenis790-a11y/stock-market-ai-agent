@@ -1,10 +1,25 @@
 import json
 import os
 import re
+import time
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+
+MIN_REQUEST_INTERVAL = 1.0
+_last_request_time: float | None = None
+
+
+def _pace_request() -> None:
+    """Pace this process's sequential requests; does not track the daily quota."""
+    global _last_request_time
+    if _last_request_time is not None:
+        remaining = MIN_REQUEST_INTERVAL - (time.monotonic() - _last_request_time)
+        if remaining > 0:
+            time.sleep(remaining)
+    _last_request_time = time.monotonic()
 
 
 def get_earnings_call_transcript(ticker: str, quarter: str) -> dict:
@@ -51,6 +66,7 @@ def _request(function: str, ticker: str | None = None, **params: str | int) -> d
         params["symbol"] = ticker
     query = urlencode({**params, "function": function, "apikey": api_key})
     try:
+        _pace_request()
         with urlopen(f"https://www.alphavantage.co/query?{query}", timeout=30) as response:
             data = json.load(response)
     except HTTPError as error:
