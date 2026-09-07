@@ -37,6 +37,10 @@ def build_research_snapshot(
         missing_data.append("Earnings call transcript unavailable")
     if not news:
         missing_data.append("Recent relevant news unavailable")
+    if all(getattr(stock, name) is None for name in (
+        "current_price", "previous_close", "change", "change_percent", "latest_trading_day",
+    )):
+        missing_data.append("Latest available quote unavailable")
     for name in (
         "current_price", "market_cap", "pe_ratio", "forward_pe",
         "price_to_sales", "ev_to_ebitda",
