@@ -3,7 +3,7 @@ import os
 from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 
 
-MODEL = "gpt-4.1-nano"
+MODEL = "gpt-5.6-terra"
 
 
 def request_text(*, input: str, max_output_tokens: int, **options) -> str:
