@@ -19,6 +19,31 @@ def _to_float(value: object) -> float | None:
     return number if isfinite(number) else None
 
 
+def normalize_global_quote(data: dict) -> dict:
+    """Return latest available quote fields for StockResearchData keyword updates.
+
+    API percentage units become decimal units ("1.23%" or "1.23" -> 0.0123).
+    No price changes are calculated and no intraday timestamp is inferred.
+    """
+    quote = data.get("Global Quote") if isinstance(data, dict) else None
+    if not isinstance(quote, dict):
+        quote = {}
+    percent = quote.get("10. change percent")
+    if isinstance(percent, str):
+        percent = percent.strip().removesuffix("%")
+    percent = _to_float(percent)
+    day = quote.get("07. latest trading day")
+    if not isinstance(day, str) or day.strip() in ("", "None", "-"):
+        day = None
+    return {
+        "current_price": _to_float(quote.get("05. price")),
+        "previous_close": _to_float(quote.get("08. previous close")),
+        "change": _to_float(quote.get("09. change")),
+        "change_percent": percent / 100 if percent is not None else None,
+        "latest_trading_day": day,
+    }
+
+
 def normalize_relevant_news(
     data: dict,
     ticker: str,

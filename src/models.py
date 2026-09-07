@@ -67,6 +67,10 @@ class StockResearchData:
     latest_earnings_eps: float | None = None
     guidance: str | None = None
     recent_news: list[str] = field(default_factory=list)
+    previous_close: float | None = None
+    change: float | None = None
+    change_percent: float | None = None  # Decimal: 1.23% is 0.0123.
+    latest_trading_day: str | None = None
 
 
 @dataclass

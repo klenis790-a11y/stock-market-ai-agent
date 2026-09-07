@@ -6,6 +6,11 @@ from urllib.parse import urlencode
 from urllib.request import urlopen
 
 
+def get_global_quote(ticker: str) -> dict:
+    """Retrieve the latest available quote; no real-time entitlement is assumed."""
+    return _request("GLOBAL_QUOTE", ticker)
+
+
 def get_company_overview(ticker: str) -> dict:
     return _request("OVERVIEW", ticker)
 
