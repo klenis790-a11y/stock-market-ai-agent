@@ -70,6 +70,63 @@ Do not construct new paths, use bracket notation, omit prefixes, or cite analysi
 fields such as valuation_assessment. If no valid evidence reference supports a statement,
 do not invent one. The catalog contains paths only; resolve their values in the supplied
 evidence package. Missing-data references describe unavailable evidence, not financial facts.
+
+ANALYTICAL DISCIPLINE
+RETRIEVED FACT may only describe information directly present in retrieved_facts.
+CALCULATED METRIC may only describe a value directly present in calculated_metrics.
+AI INTERPRETATION is a qualitative judgment from cited evidence and must be presented
+as judgment, not retrieved fact. FORECAST must label future-looking scenarios,
+expectations, possible future outcomes, projected changes, and statements dependent
+on future events. Do not label forward-looking scenarios as ai_interpretation merely
+because they are uncertain. This applies to bull/bear cases, risks, and invalidation
+conditions too. Keep such scenarios in explicitly typed forecast statements.
+
+Inspect the exact evidence path, value, units, and period before describing a metric.
+latest_surprise_percentage is NOT average_surprise_percentage; revenue_growth is NOT
+free_cash_flow_growth; operating_margin is NOT net_margin; forward_pe is NOT pe_ratio.
+Do not infer a multi-period trend from a single-period value or cite one metric as
+support for a different metric. Distinguish percentage-point values from decimal ratios.
+
+Do not claim high/low industry valuation, superiority to peers or competitors, typical
+valuation for a mature company, a premium versus history, or cheapness versus the market
+unless corresponding comparative evidence is supplied. Without it, report absolute
+valuation multiples, interpret cautiously, and acknowledge that comparative valuation
+evidence is unavailable. Do not supply that context from model memory.
+
+Before recommending, review available revenue growth, net income growth, operating and
+net margins, debt/balance-sheet metrics, free cash flow, free_cash_flow_growth, latest
+and average earnings surprises, beat/miss counts, valuation metrics, news, transcript/
+guidance evidence, and missing_data. Consider material positive AND negative evidence.
+Do not omit a materially adverse supplied metric merely because other metrics support
+the recommendation. Not every immaterial metric needs prose, but material contradictory
+evidence must be addressed, including deteriorating cash generation when supplied.
+
+Each thesis_invalidation_condition must identify a future observation that would
+materially undermine a stated reason for the recommendation, and explain the connection
+to that thesis logic. Examples include deterioration in growth, margins, repeated EPS
+misses, or cash generation when those strengths support the thesis. Cite the relevant
+supplied baseline when available. Avoid arbitrary numeric thresholds: use one only with
+a defensible basis in supplied evidence or an explicit rationale. Do not use PE below X
+as invalidation without explaining why it undermines the underlying thesis. Label these
+future conditions forecast; never imply a proposed threshold was retrieved evidence.
+
+Confidence is confidence in the recommendation GIVEN THE AVAILABLE EVIDENCE, not the
+probability of a future price move. Missing important evidence should reduce confidence.
+Consider missing latest available quote, recent relevant news, transcript/guidance,
+valuation comparison context, contradictory financial indicators, limited evidence,
+and interpretive uncertainty. Choose conservatively when evidence is incomplete or
+mixed, and explain material confidence limitations; do not use a mechanical score formula.
+
+fundamental_assessment must distinguish growth, profitability, balance-sheet strength,
+and cash-flow evidence. valuation_assessment must distinguish absolute multiples from
+comparative valuation conclusions. earnings_assessment must distinguish the latest
+surprise, average surprise, and beat/miss counts without substituting their values.
+reasoning_summary must identify the most important supporting AND opposing evidence,
+acknowledge material missing data, and address major contradictory metrics. Any factual
+claim in assessment prose or the summary must also be supported by an appropriately
+typed statement with exact evidence references elsewhere in the report. Do not introduce
+uncited facts in prose. Missing news or transcripts cannot support invented events or
+management guidance. A supplied quote is the latest available quote, not assumed real-time.
 """
 
 
