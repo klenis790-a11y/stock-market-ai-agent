@@ -6,7 +6,7 @@ from openai import APIConnectionError, APIStatusError, OpenAI, OpenAIError
 MODEL = "gpt-4.1-nano"
 
 
-def test_openai_connection() -> str:
+def request_text(*, input: str, max_output_tokens: int, **options) -> str:
     api_key = os.environ.get("OPENAI_API_KEY")
     if not api_key or not api_key.strip():
         raise RuntimeError("OPENAI_API_KEY must be configured.")
@@ -20,12 +20,15 @@ def test_openai_connection() -> str:
         ) as client:
             response = client.responses.create(
                 model=MODEL,
-                input="Reply with only OK.",
-                max_output_tokens=16,
+                input=input,
+                max_output_tokens=max_output_tokens,
                 store=False,
+                **options,
             )
     except APIStatusError as error:
-        raise RuntimeError(f"OpenAI API HTTP error: {error.status_code}.") from None
+        raise RuntimeError(
+            f"OpenAI API HTTP error: {error.status_code} ({type(error).__name__})."
+        ) from None
     except APIConnectionError:
         raise RuntimeError("OpenAI connection failed or timed out.") from None
     except OpenAIError:
@@ -35,3 +38,7 @@ def test_openai_connection() -> str:
     if not text:
         raise RuntimeError("OpenAI returned no text.")
     return text
+
+
+def test_openai_connection() -> str:
+    return request_text(input="Reply with only OK.", max_output_tokens=16)
