@@ -3,7 +3,7 @@ import math
 import os
 
 from src.models import AnalysisStatement, InvestmentAnalysis
-from src.evidence import build_valid_evidence_references
+from src.evidence import build_evidence_catalog, resolve_evidence_id
 from src.openai_client import request_text
 
 
@@ -55,21 +55,14 @@ Preserve uncertainty, distinguish weak from strong evidence, identify major risk
 concrete future events/results/data that could invalidate the thesis. Include supporting
 evidence, risks, and thesis invalidation conditions. Retain every input missing_data item
 verbatim and explain its implications. Do not invent additional financial facts.
-Every grounded statement in bull_case, bear_case, supporting_evidence, major_risks,
-and thesis_invalidation_conditions must cite concrete existing dot-separated evidence
-paths, using zero-based list indices, e.g. retrieved_facts.stock.pe_ratio or
-calculated_metrics.income_statement_metrics.revenue_growth. Never cite arbitrary source
-names or nonexistent paths. Retrieved-fact and calculated-metric statements require
-non-null evidence references under their respective categories. For an interpretation
-about missing data, cite a catalog path under missing_data. Ungrounded conditional scenarios may have empty
-references but must be explicitly hypothetical and labeled forecast.
-If evidence is fictional/test data, explicitly retain that context; do not infer a real
-company identity or facts outside that test evidence.
-evidence_refs MUST contain only exact strings copied from VALID_EVIDENCE_REFERENCES.
-Do not construct new paths, use bracket notation, omit prefixes, or cite analysis output
-fields such as valuation_assessment. If no valid evidence reference supports a statement,
-do not invent one. The catalog contains paths only; resolve their values in the supplied
-evidence package. Missing-data references describe unavailable evidence, not financial facts.
+evidence_refs MUST contain only exact evidence IDs copied from EVIDENCE_CATALOG.
+Never invent an ID or return a path, bracket notation, or an analysis output field.
+Every factual/calculated claim must cite supporting evidence IDs. Interpretations and
+forecasts must cite the evidence on which their reasoning is based. If supplied evidence
+does not support a claim, do not make it. Missing data remains separate: acknowledge
+its limitations without inventing a citation ID for it. Read each catalog entry's path
+and value to understand provenance, but return only its evidence_id in evidence_refs.
+If evidence is fictional/test data, preserve that context and infer no real company facts.
 
 ANALYTICAL DISCIPLINE
 RETRIEVED FACT may only describe information directly present in retrieved_facts.
@@ -174,6 +167,7 @@ def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
         raise ValueError("Analysis confidence_score must be between 0 and 100.")
     result = dict(data)
     invalid_refs = []
+    catalog = build_evidence_catalog(evidence)
     for name in STATEMENT_LISTS:
         if not isinstance(data[name], list):
             raise ValueError(f"Analysis {name} must be a list.")
@@ -192,12 +186,13 @@ def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
                 raise ValueError("Fact and metric statements require evidence references.")
             for ref in refs:
                 try:
-                    value = _resolve_reference(evidence, ref)
+                    entry = resolve_evidence_id(ref, catalog, evidence)
+                    value = entry["value"]
                 except ValueError:
                     if ref not in invalid_refs:
                         invalid_refs.append(ref)
                     continue
-                if prefix and (not ref.startswith(prefix) or value is None):
+                if prefix and (not entry["path"].startswith(prefix) or value is None):
                     raise ValueError("Evidence reference does not support the statement category.")
             statements.append(AnalysisStatement(**{**statement, "evidence_refs": list(refs)}))
         result[name] = statements
@@ -221,7 +216,7 @@ def analyze_investment(evidence: dict) -> InvestmentAnalysis:
     response = request_text(
         input=json.dumps({
             "evidence_package": evidence,
-            "VALID_EVIDENCE_REFERENCES": build_valid_evidence_references(evidence),
+            "EVIDENCE_CATALOG": build_evidence_catalog(evidence),
         }, allow_nan=False),
         instructions=INSTRUCTIONS,
         max_output_tokens=4000,

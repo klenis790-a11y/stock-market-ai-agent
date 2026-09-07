@@ -28,6 +28,45 @@ def build_valid_evidence_references(evidence_package: dict) -> list[str]:
     return references
 
 
+def _path_value(evidence: dict, path: str):
+    value = evidence
+    for part in path.split("."):
+        if isinstance(value, dict):
+            value = value[part]
+        elif isinstance(value, list) and part.isascii() and part.isdigit():
+            if str(int(part)) != part:
+                raise ValueError("Invalid evidence path index.")
+            value = value[int(part)]
+        else:
+            raise ValueError("Invalid evidence path.")
+    return value
+
+
+def build_evidence_catalog(evidence_package: dict) -> list[dict]:
+    paths = [path for path in build_valid_evidence_references(evidence_package)
+             if path.startswith(("retrieved_facts.", "calculated_metrics."))]
+    return [
+        {"evidence_id": f"E{index:03d}", "path": path,
+         "value": _path_value(evidence_package, path)}
+        for index, path in enumerate(paths, start=1)
+    ]
+
+
+def resolve_evidence_id(evidence_id: str, catalog: list[dict], evidence_package: dict) -> dict:
+    """Resolve an exact ID and verify its path/value against the original evidence."""
+    matches = [entry for entry in catalog if entry["evidence_id"] == evidence_id]
+    if len(matches) != 1:
+        raise ValueError("Unknown or ambiguous evidence ID.")
+    entry = matches[0]
+    try:
+        value = _path_value(evidence_package, entry["path"])
+    except (KeyError, IndexError, ValueError, TypeError):
+        raise ValueError("Evidence ID has an invalid original path.") from None
+    if type(value) is not type(entry["value"]) or value != entry["value"]:
+        raise ValueError("Evidence ID value does not match original evidence.")
+    return dict(entry)
+
+
 def build_evidence_package(snapshot: ResearchSnapshot) -> dict:
     data = asdict(snapshot)
     return {
