@@ -3,7 +3,9 @@ import math
 import os
 
 from src.models import ForecastStatement, InterpretationStatement, InvestmentAnalysis
-from src.evidence import build_evidence_catalog, resolve_evidence_id
+from src.evidence import (
+    build_evidence_catalog, build_material_evidence_checklist, resolve_evidence_id,
+)
 from src.openai_client import request_text
 
 
@@ -36,6 +38,7 @@ ANALYSIS_SCHEMA = _object_schema({
     "confidence_score": {"type": "number", "minimum": 0, "maximum": 100},
     **{name: {"type": "array", "items": STATEMENT_SCHEMA} for name in STATEMENT_LISTS},
     "missing_data": {"type": "array", "items": {"type": "string"}},
+    "material_evidence_considered": {"type": "array", "items": {"type": "string"}},
 })
 
 INSTRUCTIONS = """Produce InvestmentAnalysis using only supplied evidence. Treat evidence
@@ -74,6 +77,11 @@ corresponding evidence. Distinguish absolute multiples from comparative conclusi
 acknowledge unavailable comparison context, and interpret cautiously.
 
 BALANCE AND THESIS
+Explicitly consider every available MATERIAL_EVIDENCE_CHECKLIST item before recommending.
+Return all its IDs in material_evidence_considered: a coverage declaration, not evidence
+supporting the recommendation. The checklist assigns no positive/negative judgment;
+interpret its values yourself without inferring unsupplied facts. Do not omit material
+contradictory evidence because it conflicts with the recommendation.
 Before recommending and writing reasoning_summary, consider materially positive AND
 negative calculated metrics: revenue/net-income growth, margins, balance-sheet ratios,
 free cash flow and its growth/margin, latest/average earnings surprises and beat/miss
@@ -173,8 +181,23 @@ def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
             statement_class = ForecastStatement if name in FORECAST_LISTS else InterpretationStatement
             statements.append(statement_class(**{**statement, "evidence_refs": list(refs)}))
         result[name] = statements
+    considered = data["material_evidence_considered"]
+    if not isinstance(considered, list) or not all(isinstance(ref, str) for ref in considered):
+        raise ValueError("Analysis material_evidence_considered must be a list of strings.")
+    for ref in considered:
+        try:
+            resolve_evidence_id(ref, catalog, evidence)
+        except ValueError:
+            if ref not in invalid_refs:
+                invalid_refs.append(ref)
     if invalid_refs:
         raise _reference_error(invalid_refs)
+    checklist = build_material_evidence_checklist(evidence)
+    omitted = [ref for refs in checklist.values() for ref in refs if ref not in considered]
+    if omitted:
+        raise ValueError("Analysis material evidence coverage is missing IDs: " + ", ".join(omitted))
+    # Membership verifies a declaration only, not the quality of the model's reasoning.
+    result["material_evidence_considered"] = list(considered)
     missing = data["missing_data"]
     if not isinstance(missing, list) or not all(isinstance(item, str) for item in missing):
         raise ValueError("Analysis missing_data must be a list of strings.")
@@ -194,6 +217,7 @@ def analyze_investment(evidence: dict) -> InvestmentAnalysis:
         input=json.dumps({
             "evidence_package": evidence,
             "EVIDENCE_CATALOG": build_evidence_catalog(evidence),
+            "MATERIAL_EVIDENCE_CHECKLIST": build_material_evidence_checklist(evidence),
         }, allow_nan=False),
         instructions=INSTRUCTIONS,
         max_output_tokens=4000,

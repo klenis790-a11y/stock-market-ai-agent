@@ -52,6 +52,32 @@ def build_evidence_catalog(evidence_package: dict) -> list[dict]:
     ]
 
 
+def build_material_evidence_checklist(evidence_package: dict) -> dict[str, list[str]]:
+    """Declare coverage of available financial evidence, without assigning judgment."""
+    groups = {
+        "valuation": ("retrieved_facts.stock", (
+            "pe_ratio", "forward_pe", "price_to_sales", "ev_to_ebitda")),
+        "growth_profitability": ("calculated_metrics.income_statement_metrics", (
+            "revenue_growth", "net_income_growth", "operating_margin", "net_margin")),
+        "cash_flow": ("calculated_metrics.cash_flow_metrics", (
+            "free_cash_flow", "free_cash_flow_growth", "free_cash_flow_margin")),
+        "balance_sheet": ("calculated_metrics.balance_sheet_metrics", (
+            "debt_to_equity", "liabilities_to_assets", "cash_to_debt")),
+        "earnings": ("calculated_metrics.earnings_metrics", (
+            "latest_surprise_percentage", "average_surprise_percentage",
+            "beats_last_4_quarters", "misses_last_4_quarters")),
+    }
+    ids_by_path = {
+        entry["path"]: entry["evidence_id"]
+        for entry in build_evidence_catalog(evidence_package)
+    }
+    return {
+        category: [ids_by_path[f"{prefix}.{name}"] for name in names
+                   if f"{prefix}.{name}" in ids_by_path]
+        for category, (prefix, names) in groups.items()
+    }
+
+
 def resolve_evidence_id(evidence_id: str, catalog: list[dict], evidence_package: dict) -> dict:
     """Resolve an exact ID and verify its path/value against the original evidence."""
     matches = [entry for entry in catalog if entry["evidence_id"] == evidence_id]

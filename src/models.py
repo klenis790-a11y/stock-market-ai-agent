@@ -137,3 +137,4 @@ class InvestmentAnalysis:
     scenarios: list[ForecastStatement]
     missing_data: list[str]
     reasoning_summary: str
+    material_evidence_considered: list[str]  # Coverage declaration, not recommendation support.
