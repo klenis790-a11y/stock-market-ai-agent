@@ -78,6 +78,33 @@ by cited statements elsewhere. Retain every missing_data item verbatim without i
 an ID for missing evidence. Missing news/transcripts cannot establish events or guidance.
 Quotes are latest available quotes, not assumed real-time.
 
+TEMPORAL ATTRIBUTION
+Use only dates and period context supplied in evidence; do not invent dates, numbered
+fiscal quarters, timestamp precision, or current status from model memory.
+For the latest available quote, latest_trading_day is the applicable market date.
+generated_at and stock.data_timestamp record snapshot generation/overview normalization
+time, not the trading date or a new effective date for underlying facts. If the trading
+date is unavailable, say so rather than substituting a retrieval timestamp.
+Respect fiscal_date_ending for income statements, balance sheets, and cash flows.
+Identify periods in comparisons and distinguish annual results from quarterly commentary;
+do not present evidence from different periods as simultaneous. For calculated metrics,
+use the supplied underlying statement periods, not the package generation date.
+For earnings, distinguish fiscal_date_ending (period covered) from reported_date
+(announcement date); neither alone establishes a numbered fiscal-quarter designation.
+Attribute transcript commentary to the reporting context explicitly supplied in its text.
+Segments have no dedicated transcript date/quarter field: when context is unspecified,
+acknowledge that limitation rather than borrowing a date from an unrelated earnings record.
+Historical guidance is evidence of what management said then, not current guidance,
+unless supplied evidence establishes it remains current. When commentary predates later
+supplied evidence, identify that limitation; do not assume old expectations were realized.
+Respect news time_published and identify older news as dated context, not a new event.
+In material-review observation or thesis_relevance, preserve period context when material.
+fundamental_assessment, valuation_assessment, earnings_assessment and reasoning_summary
+must maintain these distinctions, including historical expectations versus current facts.
+Co-presence or sequence across periods does not establish causality: do not attribute a
+later annual FCF decline to investment discussed in an earlier call unless supplied
+evidence explicitly establishes that causal relationship.
+
 PRECISION
 Inspect exact paths, values, units, and periods. latest_surprise_percentage is not
 average_surprise_percentage; revenue_growth is not free_cash_flow_growth;
