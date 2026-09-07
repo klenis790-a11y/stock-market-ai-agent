@@ -1,9 +1,16 @@
 import json
 import os
+import re
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import urlopen
+
+
+def get_earnings_call_transcript(ticker: str, quarter: str) -> dict:
+    if not isinstance(quarter, str) or re.fullmatch(r"[0-9]{4}Q[1-4]", quarter) is None:
+        raise ValueError("quarter must use YYYYQ1, YYYYQ2, YYYYQ3, or YYYYQ4 format.")
+    return _request("EARNINGS_CALL_TRANSCRIPT", ticker, quarter=quarter)
 
 
 def get_global_quote(ticker: str) -> dict:

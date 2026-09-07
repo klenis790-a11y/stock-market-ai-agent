@@ -5,6 +5,7 @@ from src.models import (
     BalanceSheetPeriod,
     CashFlowPeriod,
     EarningsPeriod,
+    EarningsCallTranscriptSegment,
     IncomeStatementPeriod,
     NewsItem,
     StockResearchData,
@@ -17,6 +18,33 @@ def _to_float(value: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return number if isfinite(number) else None
+
+
+def normalize_earnings_call_transcript(data: dict) -> list[EarningsCallTranscriptSegment]:
+    """Preserve complete transcript segments and vendor-provided attribution."""
+    transcript = data.get("transcript") if isinstance(data, dict) else None
+    if not isinstance(transcript, list):
+        return []
+    segments = []
+    for entry in transcript:
+        if not isinstance(entry, dict):
+            continue
+        content = entry.get("content")
+        if not isinstance(content, str) or not content.strip():
+            continue
+        attribution = {}
+        for name in ("speaker", "title"):
+            value = entry.get(name)
+            attribution[name] = (
+                value if isinstance(value, str) and value.strip() not in ("", "None", "-")
+                else None
+            )
+        segments.append(EarningsCallTranscriptSegment(
+            content=content,
+            sentiment=_to_float(entry.get("sentiment")),
+            **attribution,
+        ))
+    return segments
 
 
 def normalize_global_quote(data: dict) -> dict:

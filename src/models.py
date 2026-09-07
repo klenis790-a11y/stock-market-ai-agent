@@ -38,6 +38,14 @@ class EarningsPeriod:
 
 
 @dataclass
+class EarningsCallTranscriptSegment:
+    content: str
+    speaker: str | None = None
+    title: str | None = None
+    sentiment: float | None = None  # Vendor-supplied annotation, not our analysis.
+
+
+@dataclass
 class NewsItem:
     title: str
     source: str | None = None
