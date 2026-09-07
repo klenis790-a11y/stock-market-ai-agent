@@ -89,6 +89,7 @@ class ResearchSnapshot:
     cash_flows: list[CashFlowPeriod]
     earnings: list[EarningsPeriod]
     news: list[NewsItem]
+    earnings_call_transcript: list[EarningsCallTranscriptSegment]
     income_statement_metrics: dict[str, float | None]
     balance_sheet_metrics: dict[str, float | None]
     cash_flow_metrics: dict[str, float | None]

@@ -14,6 +14,7 @@ def build_evidence_package(snapshot: ResearchSnapshot) -> dict:
             for name in (
                 "stock", "income_statements", "balance_sheets",
                 "cash_flows", "earnings", "news",
+                "earnings_call_transcript",
             )
         },
         "calculated_metrics": {
