@@ -100,11 +100,18 @@ class ResearchSnapshot:
 
 
 @dataclass
-class AnalysisStatement:
-    """Statement type: retrieved_fact, calculated_metric, ai_interpretation, or forecast."""
+class InterpretationStatement:
+    """AI judgment about current/historical evidence, cited by exact evidence IDs."""
 
     text: str
-    statement_type: str
+    evidence_refs: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ForecastStatement:
+    """Forward-looking scenario or condition, based on cited evidence IDs."""
+
+    text: str
     evidence_refs: list[str] = field(default_factory=list)
 
 
@@ -112,7 +119,8 @@ class AnalysisStatement:
 class InvestmentAnalysis:
     """Report contract; recommendation: Buy, Accumulate, Hold, Trim, or Avoid.
 
-    confidence_score is a 0-100 score. No validation or scoring is performed.
+    confidence_score is confidence in the recommendation given available evidence,
+    on a 0-100 scale, not a price-move probability. No scoring is performed here.
     """
 
     ticker: str
@@ -121,10 +129,11 @@ class InvestmentAnalysis:
     fundamental_assessment: str
     valuation_assessment: str
     earnings_assessment: str
-    bull_case: list[AnalysisStatement]
-    bear_case: list[AnalysisStatement]
-    supporting_evidence: list[AnalysisStatement]
-    major_risks: list[AnalysisStatement]
-    thesis_invalidation_conditions: list[AnalysisStatement]
+    bull_case: list[InterpretationStatement]
+    bear_case: list[InterpretationStatement]
+    supporting_evidence: list[InterpretationStatement]
+    major_risks: list[InterpretationStatement]
+    thesis_invalidation_conditions: list[ForecastStatement]
+    scenarios: list[ForecastStatement]
     missing_data: list[str]
     reasoning_summary: str

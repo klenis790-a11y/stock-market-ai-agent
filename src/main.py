@@ -5,7 +5,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from src.models import InvestmentAnalysis
+from src.models import ForecastStatement, InvestmentAnalysis
 from src.research_pipeline import run_stock_research
 
 
@@ -18,11 +18,12 @@ def format_analysis(analysis: InvestmentAnalysis) -> str:
         lines.append(f"{name.replace('_', ' ').title()}: {getattr(analysis, name)}")
     for name in (
         "bull_case", "bear_case", "supporting_evidence", "major_risks",
-        "thesis_invalidation_conditions",
+        "thesis_invalidation_conditions", "scenarios",
     ):
         lines.append(f"\n{name.replace('_', ' ').title()}:")
         for statement in getattr(analysis, name):
-            lines.append(f"- [{statement.statement_type}] {statement.text}")
+            category = "FORECAST" if isinstance(statement, ForecastStatement) else "AI INTERPRETATION"
+            lines.append(f"- [{category}] {statement.text}")
             lines.append(f"  Evidence: {', '.join(statement.evidence_refs) or 'None'}")
     lines.append("\nMissing data:")
     lines.extend(f"- {item}" for item in analysis.missing_data)
