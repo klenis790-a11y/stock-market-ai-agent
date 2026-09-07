@@ -25,6 +25,11 @@ def format_analysis(analysis: InvestmentAnalysis) -> str:
             category = "FORECAST" if isinstance(statement, ForecastStatement) else "AI INTERPRETATION"
             lines.append(f"- [{category}] {statement.text}")
             lines.append(f"  Evidence: {', '.join(statement.evidence_refs) or 'None'}")
+    lines.append("\nMaterial Evidence Review:")
+    for review in analysis.material_evidence_review:
+        lines.append(f"{review.evidence_id}")
+        lines.append(f"  Observation: {review.observation}")
+        lines.append(f"  Thesis relevance: {review.thesis_relevance}")
     lines.append("\nMissing data:")
     lines.extend(f"- {item}" for item in analysis.missing_data)
     lines.append(f"\nReasoning summary: {analysis.reasoning_summary}")

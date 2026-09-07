@@ -116,6 +116,15 @@ class ForecastStatement:
 
 
 @dataclass
+class MaterialEvidenceReview:
+    """Generated review of one material evidence item; provenance stays in the catalog."""
+
+    evidence_id: str
+    observation: str
+    thesis_relevance: str
+
+
+@dataclass
 class InvestmentAnalysis:
     """Report contract; recommendation: Buy, Accumulate, Hold, Trim, or Avoid.
 
@@ -137,4 +146,4 @@ class InvestmentAnalysis:
     scenarios: list[ForecastStatement]
     missing_data: list[str]
     reasoning_summary: str
-    material_evidence_considered: list[str]  # Coverage declaration, not recommendation support.
+    material_evidence_review: list[MaterialEvidenceReview]
