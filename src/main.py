@@ -26,8 +26,8 @@ def format_analysis(analysis: InvestmentAnalysis) -> str:
             lines.append(f"- [{category}] {statement.text}")
             lines.append(f"  Evidence: {', '.join(statement.evidence_refs) or 'None'}")
     lines.append("\nMaterial Evidence Review:")
-    for review in analysis.material_evidence_review:
-        lines.append(f"{review.evidence_id}")
+    for evidence_id, review in analysis.material_evidence_review.items():
+        lines.append(evidence_id)
         lines.append(f"  Observation: {review.observation}")
         lines.append(f"  Thesis relevance: {review.thesis_relevance}")
     lines.append("\nMissing data:")

@@ -119,7 +119,6 @@ class ForecastStatement:
 class MaterialEvidenceReview:
     """Generated review of one material evidence item; provenance stays in the catalog."""
 
-    evidence_id: str
     observation: str
     thesis_relevance: str
 
@@ -146,4 +145,4 @@ class InvestmentAnalysis:
     scenarios: list[ForecastStatement]
     missing_data: list[str]
     reasoning_summary: str
-    material_evidence_review: list[MaterialEvidenceReview]
+    material_evidence_review: dict[str, MaterialEvidenceReview]

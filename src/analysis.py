@@ -35,7 +35,6 @@ STATEMENT_SCHEMA = _object_schema({
     "evidence_refs": {"type": "array", "minItems": 1, "items": {"type": "string"}},
 })
 REVIEW_SCHEMA = _object_schema({
-    "evidence_id": {"type": "string"},
     "observation": {"type": "string", "minLength": 1},
     "thesis_relevance": {"type": "string", "minLength": 1},
 })
@@ -45,21 +44,15 @@ ANALYSIS_SCHEMA = _object_schema({
     "confidence_score": {"type": "number", "minimum": 0, "maximum": 100},
     **{name: {"type": "array", "items": STATEMENT_SCHEMA} for name in STATEMENT_LISTS},
     "missing_data": {"type": "array", "items": {"type": "string"}},
-    "material_evidence_review": {"type": "array", "items": REVIEW_SCHEMA},
+    "material_evidence_review": _object_schema({}),
 })
 
 def build_analysis_schema(evidence: dict) -> dict:
-    """Constrain review IDs/count to this run; post-validation enforces uniqueness."""
+    """Require exactly the application-owned review keys for this evidence package."""
     required = [ref for refs in build_material_evidence_checklist(evidence).values() for ref in refs]
-    item = _object_schema({
-        **REVIEW_SCHEMA["properties"],
-        "evidence_id": {"type": "string", "enum": required} if required else {"type": "string"},
-    })
     return _object_schema({
         **ANALYSIS_SCHEMA["properties"],
-        "material_evidence_review": {
-            "type": "array", "items": item, "minItems": len(required), "maxItems": len(required),
-        },
+        "material_evidence_review": _object_schema({ref: REVIEW_SCHEMA for ref in required}),
     })
 
 
@@ -99,11 +92,13 @@ corresponding evidence. Distinguish absolute multiples from comparative conclusi
 acknowledge unavailable comparison context, and interpret cautiously.
 
 BALANCE AND THESIS
-For each MATERIAL_EVIDENCE_CHECKLIST ID, return exactly one material_evidence_review:
-inspect its exact value, describe accurately what it shows in observation, and explain
-its relevance or uncertainty for the thesis in thesis_relevance. Include contradictory
-evidence; do not invent causes or strengthen values. A negative FCF-growth value means
-a decline, not an established cause. Reviews assign no automatic recommendation votes.
+material_evidence_review is already keyed by the required MATERIAL_EVIDENCE_CHECKLIST
+IDs in the schema. Do not create, rename, substitute, or omit keys, or put evidence_id
+inside review values. For each key, describe only that item's actual value/context in
+observation, then explain its relevance or uncertainty in thesis_relevance. Include
+negative, mixed, or neutral evidence without forcing a positive/negative judgment.
+Do not invent causes, peer/historical benchmarks, or stronger facts. A negative
+FCF-growth value establishes a decline, not its cause. Reviews are not recommendation votes.
 Assessments, cases, risks, summary, recommendation and confidence must be consistent
 with these reviews; material contradictory evidence must not disappear in final reasoning.
 Before recommending and writing reasoning_summary, consider materially positive AND
@@ -206,35 +201,28 @@ def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
             statements.append(statement_class(**{**statement, "evidence_refs": list(refs)}))
         result[name] = statements
     reviews = data["material_evidence_review"]
-    if not isinstance(reviews, list):
-        raise ValueError("Analysis material_evidence_review must be a list.")
+    if not isinstance(reviews, dict):
+        raise ValueError("Analysis material_evidence_review must be an object.")
     required = [ref for refs in build_material_evidence_checklist(evidence).values() for ref in refs]
-    seen = []
-    parsed_reviews = []
-    for review in reviews:
+    if set(reviews) != set(required):
+        raise ValueError("Material evidence review keys must exactly match the checklist.")
+    parsed_reviews = {}
+    for ref in required:
+        review = reviews[ref]
         if not isinstance(review, dict) or set(review) != set(REVIEW_SCHEMA["required"]):
             raise ValueError("Material evidence review has missing or unexpected fields.")
         if not all(isinstance(review[name], str) and review[name].strip()
                    for name in REVIEW_SCHEMA["required"]):
             raise ValueError("Material evidence review fields must be non-empty strings.")
-        ref = review["evidence_id"]
         try:
             resolve_evidence_id(ref, catalog, evidence)
         except ValueError:
             if ref not in invalid_refs:
                 invalid_refs.append(ref)
             continue
-        if ref not in required:
-            raise ValueError("Material evidence review ID is not in the checklist.")
-        if ref in seen:
-            raise ValueError("Material evidence review contains duplicate ID: " + ref)
-        seen.append(ref)
-        parsed_reviews.append(MaterialEvidenceReview(**review))
+        parsed_reviews[ref] = MaterialEvidenceReview(**review)
     if invalid_refs:
         raise _reference_error(invalid_refs)
-    omitted = [ref for ref in required if ref not in seen]
-    if omitted:
-        raise ValueError("Analysis material evidence review is missing IDs: " + ", ".join(omitted))
     # Coverage and non-empty prose do not prove semantic correctness.
     result["material_evidence_review"] = parsed_reviews
     missing = data["missing_data"]
