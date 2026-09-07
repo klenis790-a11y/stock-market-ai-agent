@@ -3,6 +3,7 @@ import math
 import os
 
 from src.models import AnalysisStatement, InvestmentAnalysis
+from src.evidence import build_valid_evidence_references
 from src.openai_client import request_text
 
 
@@ -60,10 +61,15 @@ paths, using zero-based list indices, e.g. retrieved_facts.stock.pe_ratio or
 calculated_metrics.income_statement_metrics.revenue_growth. Never cite arbitrary source
 names or nonexistent paths. Retrieved-fact and calculated-metric statements require
 non-null evidence references under their respective categories. For an interpretation
-about missing data, cite missing_data. Ungrounded conditional scenarios may have empty
+about missing data, cite a catalog path under missing_data. Ungrounded conditional scenarios may have empty
 references but must be explicitly hypothetical and labeled forecast.
 If evidence is fictional/test data, explicitly retain that context; do not infer a real
 company identity or facts outside that test evidence.
+evidence_refs MUST contain only exact strings copied from VALID_EVIDENCE_REFERENCES.
+Do not construct new paths, use bracket notation, omit prefixes, or cite analysis output
+fields such as valuation_assessment. If no valid evidence reference supports a statement,
+do not invent one. The catalog contains paths only; resolve their values in the supplied
+evidence package. Missing-data references describe unavailable evidence, not financial facts.
 """
 
 
@@ -156,7 +162,10 @@ def analyze_investment(evidence: dict) -> InvestmentAnalysis:
     if not all(isinstance(item, str) for item in evidence["missing_data"]):
         raise ValueError("Evidence missing_data must contain strings.")
     response = request_text(
-        input=json.dumps(evidence, allow_nan=False),
+        input=json.dumps({
+            "evidence_package": evidence,
+            "VALID_EVIDENCE_REFERENCES": build_valid_evidence_references(evidence),
+        }, allow_nan=False),
         instructions=INSTRUCTIONS,
         max_output_tokens=4000,
         text={"format": {
