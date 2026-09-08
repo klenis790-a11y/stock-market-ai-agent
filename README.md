@@ -105,3 +105,21 @@ This is **one acceptance run**, not evidence of investment accuracy, repeatabili
 V0.1 intentionally excludes portfolio awareness, automated trading, backtesting, technical indicators, databases, UI frameworks and multi-agent systems. Future work is deferred: broader offline evaluations and separately scoped improvements based on observed limitations.
 
 This project provides research and decision support, not personalized investment advice or guaranteed predictions. It does not execute trades.
+
+## V0.2 portfolio CLI
+
+Standalone research remains `.venv/bin/python src/main.py AAPL`.
+For portfolio-aware research, use:
+
+```sh
+.venv/bin/python src/main.py AAPL --portfolio "AAPL:10:150,MSFT:5:300" --cash 5000
+```
+
+Holdings use comma-separated `TICKER:SHARES:AVERAGE_COST`; whitespace is accepted,
+duplicate tickers and invalid or negative quantities are rejected. Cash defaults to
+0; use `--portfolio "" --cash 5000` for cash-only input. The target need not be owned.
+Portfolio mode adds the portfolio assessment, ownership, weights and policy notes.
+No portfolios are saved. A held target currently receives two quote requests: one
+for portfolio pricing and one for stock evidence. This is a known inefficiency;
+quotes may differ in time. Existing pacing applies. V0.1 scope statements above
+refer to standalone mode; V0.2 adds portfolio context without trading or persistence.

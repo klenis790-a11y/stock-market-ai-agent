@@ -1,6 +1,8 @@
 """Portfolio-aware research orchestration using the existing evidence and analysis layers."""
+from collections.abc import Callable
+
 from src.analysis import analyze_investment
-from src.models import InvestmentAnalysis, PortfolioInput
+from src.models import InvestmentAnalysis, PortfolioInput, PortfolioAnalysisContext
 from src.portfolio_context import build_portfolio_analysis_context
 from src.portfolio_data import build_live_portfolio_snapshot
 from src.portfolio_risk import assess_portfolio_risk
@@ -9,6 +11,7 @@ from src.research_pipeline import build_stock_evidence
 
 def run_portfolio_aware_research(
     target_ticker: str, portfolio_input: PortfolioInput,
+    *, on_context: Callable[[PortfolioAnalysisContext], None] | None = None,
 ) -> InvestmentAnalysis:
     """Assemble portfolio and stock evidence, then request analysis exactly once.
 
@@ -23,4 +26,7 @@ def run_portfolio_aware_research(
     risk = assess_portfolio_risk(snapshot)
     evidence = build_stock_evidence(ticker)
     context = build_portfolio_analysis_context(snapshot, risk, ticker)
-    return analyze_investment(evidence, context)
+    result = analyze_investment(evidence, context)
+    if on_context is not None:
+        on_context(context)
+    return result

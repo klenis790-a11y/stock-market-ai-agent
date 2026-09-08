@@ -689,5 +689,104 @@ class PortfolioPipelineTests(unittest.TestCase):
         self.request.assert_called_once()
 
 
+class PortfolioCLITests(unittest.TestCase):
+    def test_parse_one_default_cash(self):
+        from src.portfolio_input import parse_portfolio_input
+        self.assertEqual(parse_portfolio_input('AAA:2:10'),
+                         PortfolioInput([PortfolioPositionInput('AAA', 2, 10)], 0))
+
+    def test_parse_multiple_whitespace(self):
+        from src.portfolio_input import parse_portfolio_input
+        result = parse_portfolio_input(' aaa:2:10 , bbb:3:20 ', 100)
+        self.assertEqual([p.ticker for p in result.positions], ['AAA', 'BBB'])
+        self.assertEqual(result.cash, 100)
+
+    def test_invalid_entries(self):
+        from src.portfolio_input import parse_portfolio_input
+        for value in ('AAA', 'AAA:10', 'AAA:10:20:EXTRA', ':AAA:10',
+                      'AAA:abc:10', 'AAA:10:abc', 'AAA:1:2,',
+                      'AAA:1:2,aaa:2:3', 'AAA:-1:2', 'AAA:1:-2'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                parse_portfolio_input(value)
+
+    def test_cash_validation_and_empty(self):
+        from src.portfolio_input import parse_portfolio_input
+        self.assertEqual(parse_portfolio_input('', 100), PortfolioInput([], 100))
+        for cash in (-1, float('nan'), float('inf')):
+            with self.assertRaises(ValueError):
+                parse_portfolio_input('AAA:1:2', cash)
+
+    def run_cli(self, args, portfolio=False):
+        import io
+        from contextlib import ExitStack, redirect_stdout, redirect_stderr
+        from src import main, analysis
+        from test_v01 import evidence, payload
+        result = analysis._validate_analysis(payload(evidence()), evidence())
+        result.portfolio_assessment = 'Fixture portfolio assessment'
+        output = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')))
+            stock = stack.enter_context(patch.object(main, 'run_stock_research', return_value=result))
+            aware = stack.enter_context(patch.object(main, 'run_portfolio_aware_research', return_value=result))
+            stack.enter_context(patch('sys.argv', ['main.py', *args]))
+            stack.enter_context(redirect_stdout(output))
+            stack.enter_context(redirect_stderr(output))
+            code = 0
+            try:
+                main.main()
+            except SystemExit as error:
+                code = error.code
+        return code, output.getvalue(), stock, aware
+
+    def test_standalone_routing(self):
+        code, output, stock, aware = self.run_cli(['TEST'])
+        self.assertEqual(code, 0)
+        stock.assert_called_once_with('TEST')
+        aware.assert_not_called()
+        self.assertIn('V0.1', output)
+        self.assertNotIn('Portfolio assessment:', output)
+
+    def test_portfolio_routing_unowned(self):
+        code, output, stock, aware = self.run_cli(['TEST', '--portfolio', 'OTHER:1:10', '--cash', '100'])
+        self.assertEqual(code, 0)
+        stock.assert_not_called()
+        aware.assert_called_once()
+        self.assertEqual(aware.call_args.args,
+                         ('TEST', PortfolioInput([PortfolioPositionInput('OTHER', 1, 10)], 100)))
+        self.assertIn('Portfolio assessment: Fixture portfolio assessment', output)
+
+    def test_invalid_cli_stops_before_pipeline(self):
+        for args in (['TEST', '--portfolio', 'AAA'],
+                     ['TEST', '--portfolio', 'AAA:1:2', '--cash', '-1'],
+                     ['TEST', '--portfolio', 'AAA:1:2', '--cash', 'abc'],
+                     ['TEST', '--cash', '-1']):
+            with self.subTest(args=args):
+                code, _, stock, aware = self.run_cli(args)
+                self.assertNotEqual(code, 0)
+                stock.assert_not_called()
+                aware.assert_not_called()
+
+    def test_context_reporting_callback(self):
+        import io
+        from contextlib import redirect_stdout
+        from src import main, analysis
+        from src.portfolio_context import build_portfolio_analysis_context
+        from test_v01 import evidence, payload
+        snapshot = build_portfolio_snapshot(PortfolioInput([PortfolioPositionInput('TEST', 1, 10)], 0), {'TEST': 20})
+        context = build_portfolio_analysis_context(snapshot, assess_portfolio_risk(snapshot), 'TEST')
+        result = analysis._validate_analysis(payload(evidence()), evidence())
+        def research(*args, on_context):
+            on_context(context)
+            return result
+        out = io.StringIO()
+        with patch.object(main, 'run_portfolio_aware_research', side_effect=research), patch(
+            'sys.argv', ['main.py', 'TEST', '--portfolio', 'TEST:1:10']
+        ), redirect_stdout(out):
+            main.main()
+        self.assertIn('Target owned: True', out.getvalue())
+        self.assertIn('Target portfolio weight: 1.0', out.getvalue())
+        self.assertIn('TEST exceeds max single-position weight.', out.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()
