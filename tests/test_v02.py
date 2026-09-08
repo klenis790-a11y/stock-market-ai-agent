@@ -82,11 +82,11 @@ class PortfolioModelTests(unittest.TestCase):
 
     def test_snapshot_construction(self):
         position = PortfolioPosition("TEST", 2, 10, 12, 20, 24, 4, .2, .6)
-        snapshot = PortfolioSnapshot([position], 16, 24, 40, .4, "TEST", .6)
+        snapshot = PortfolioSnapshot([position], 16, 24, 40, .4, "TEST", .6, .6, 1, 1 / .36, .36)
         self.assertEqual(snapshot.positions, [position])
         self.assertEqual(snapshot.total_portfolio_value, 40)
         self.assertEqual(snapshot.largest_position_ticker, "TEST")
-        unavailable = PortfolioSnapshot([], 0, None, None, None, None, None)
+        unavailable = PortfolioSnapshot([], 0, None, None, None, None, None, 0, 0, None, 0)
         self.assertIsNone(unavailable.largest_position_weight)
 
 
@@ -177,11 +177,11 @@ class PortfolioCalculationTests(unittest.TestCase):
 
     def test_empty_positive_cash(self):
         self.assertEqual(build_portfolio_snapshot(PortfolioInput([], 100), {}),
-                         PortfolioSnapshot([], 100, 0, 100, 1, None, None))
+                         PortfolioSnapshot([], 100, 0, 100, 1, None, None, 0, 0, None, 0))
 
     def test_empty_zero_cash(self):
         self.assertEqual(build_portfolio_snapshot(PortfolioInput([], 0), {}),
-                         PortfolioSnapshot([], 0, 0, 0, None, None, None))
+                         PortfolioSnapshot([], 0, 0, 0, None, None, None, 0, 0, None, 0))
 
     def test_inputs_unchanged(self):
         portfolio = PortfolioInput([PortfolioPositionInput(" aaa ", 2, 10)], 5)
@@ -278,6 +278,88 @@ class PortfolioRetrievalTests(unittest.TestCase):
             self.assertTrue(all(p.portfolio_weight is None for p in snapshot.positions))
             self.assertEqual(snapshot.positions[1].position_value, 20)
             self.assertEqual(quote.call_count, 2)
+
+
+class ConcentrationTests(unittest.TestCase):
+    def snapshot(self, values, cash=0):
+        portfolio = PortfolioInput([
+            PortfolioPositionInput(str(i), 1, 1) for i in range(len(values))
+        ], cash)
+        return build_portfolio_snapshot(portfolio, dict(zip(
+            [p.ticker for p in portfolio.positions], values)))
+
+    def test_single_fully_invested(self):
+        s = self.snapshot([100])
+        self.assertEqual((s.position_count, s.top_3_weight, s.herfindahl_index,
+                          s.effective_position_count), (1, 1, 1, 1))
+
+    def test_two_equal(self):
+        s = self.snapshot([100, 100])
+        self.assertEqual((s.position_count, s.top_3_weight, s.herfindahl_index,
+                          s.effective_position_count), (2, 1, .5, 2))
+
+    def test_exactly_three(self):
+        s = self.snapshot([20, 30, 50])
+        self.assertEqual(s.position_count, 3)
+        self.assertAlmostEqual(s.top_3_weight, 1)
+        self.assertAlmostEqual(s.herfindahl_index, .38)
+        self.assertAlmostEqual(s.effective_position_count, 1 / .38)
+
+    def test_top_three_not_input_order(self):
+        s = self.snapshot([10, 40, 20, 30])
+        self.assertAlmostEqual(s.top_3_weight, .9)
+        self.assertEqual(s.position_count, 4)
+        self.assertEqual([p.ticker for p in s.positions], ['0', '1', '2', '3'])
+        self.assertEqual(s.largest_position_ticker, '1')
+        self.assertEqual(s.largest_position_weight, .4)
+
+    def test_cash_excluded_from_hhi(self):
+        s = self.snapshot([100, 100], cash=800)
+        self.assertAlmostEqual(s.top_3_weight, .2)
+        self.assertAlmostEqual(s.herfindahl_index, .02)
+        self.assertAlmostEqual(s.effective_position_count, 50)
+        self.assertLess(s.herfindahl_index, self.snapshot([100, 100]).herfindahl_index)
+
+    def test_empty(self):
+        for cash in (0, 100):
+            with self.subTest(cash=cash):
+                s = self.snapshot([], cash)
+                self.assertEqual((s.position_count, s.top_3_weight, s.herfindahl_index),
+                                 (0, 0, 0))
+                self.assertIsNone(s.effective_position_count)
+                self.assertIsNone(s.largest_position_ticker)
+                self.assertIsNone(s.largest_position_weight)
+
+    def test_missing_prices(self):
+        portfolio = PortfolioInput([PortfolioPositionInput('AAA', 1, 1)], 100)
+        for prices in ({}, {'AAA': None}):
+            with self.subTest(prices=prices):
+                s = build_portfolio_snapshot(portfolio, prices)
+                self.assertEqual(s.position_count, 1)
+                self.assertIsNone(s.top_3_weight)
+                self.assertIsNone(s.herfindahl_index)
+                self.assertIsNone(s.effective_position_count)
+
+    def test_zero_weight_and_undefined_weight(self):
+        s = self.snapshot([0], cash=100)
+        self.assertEqual(s.herfindahl_index, 0)
+        self.assertEqual(s.top_3_weight, 0)
+        self.assertIsNone(s.effective_position_count)
+        s = self.snapshot([0])
+        self.assertIsNone(s.top_3_weight)
+        self.assertIsNone(s.herfindahl_index)
+        self.assertIsNone(s.effective_position_count)
+
+    def test_immutability_and_tie_preserved(self):
+        portfolio = PortfolioInput([PortfolioPositionInput('ZZZ', 1, 1),
+                                    PortfolioPositionInput('AAA', 1, 1)], 0)
+        prices = {'ZZZ': 10, 'AAA': 10}
+        before = copy.deepcopy((portfolio, prices))
+        s = build_portfolio_snapshot(portfolio, prices)
+        self.assertEqual((portfolio, prices), before)
+        self.assertEqual([p.ticker for p in s.positions], ['ZZZ', 'AAA'])
+        self.assertEqual([p.position_value for p in s.positions], [10, 10])
+        self.assertEqual(s.largest_position_ticker, 'ZZZ')
 
 
 if __name__ == '__main__':

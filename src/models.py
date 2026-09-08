@@ -233,3 +233,9 @@ class PortfolioSnapshot:
     cash_weight: float | None
     largest_position_ticker: str | None
     largest_position_weight: float | None
+
+    # Stock weights include cash in the denominator; cash is not a position.
+    top_3_weight: float | None
+    position_count: int
+    effective_position_count: float | None
+    herfindahl_index: float | None

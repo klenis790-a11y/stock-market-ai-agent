@@ -38,6 +38,8 @@ def build_portfolio_snapshot(
         positions=positions, cash=portfolio_input.cash,
         total_positions_value=None, total_portfolio_value=None, cash_weight=None,
         largest_position_ticker=None, largest_position_weight=None,
+        top_3_weight=0.0 if not positions else None, position_count=len(positions),
+        effective_position_count=None, herfindahl_index=0.0 if not positions else None,
     )
     if any(position.position_value is None for position in positions):
         return snapshot
@@ -53,4 +55,10 @@ def build_portfolio_snapshot(
             largest = max(positions, key=lambda position: position.portfolio_weight)
             snapshot.largest_position_ticker = largest.ticker
             snapshot.largest_position_weight = largest.portfolio_weight
+            # Sort only a new weights list, preserving input/output position order.
+            weights = [position.portfolio_weight for position in positions]
+            snapshot.top_3_weight = sum(sorted(weights, reverse=True)[:3])
+            snapshot.herfindahl_index = sum(weight ** 2 for weight in weights)
+            if snapshot.herfindahl_index > 0:
+                snapshot.effective_position_count = 1 / snapshot.herfindahl_index
     return snapshot
