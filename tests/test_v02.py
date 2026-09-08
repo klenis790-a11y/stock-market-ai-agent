@@ -1,6 +1,7 @@
 """Portfolio contracts and calculations: hard-coded values, no providers or credentials."""
 import copy
 import unittest
+from unittest.mock import call, patch
 from dataclasses import fields
 
 from src.models import (
@@ -8,6 +9,7 @@ from src.models import (
 )
 
 
+from src import portfolio_data
 from src.portfolio_calculations import build_portfolio_snapshot
 
 
@@ -193,5 +195,90 @@ class PortfolioCalculationTests(unittest.TestCase):
         self.assertEqual((portfolio, prices), originals)
 
 
-if __name__ == "__main__":
+class PortfolioRetrievalTests(unittest.TestCase):
+    def setUp(self):
+        blocker = patch('socket.socket.connect', side_effect=AssertionError('Network forbidden'))
+        blocker.start()
+        self.addCleanup(blocker.stop)
+        self.portfolio = PortfolioInput([
+            PortfolioPositionInput('ZZZ', 2, 10), PortfolioPositionInput('AAA', 1, 20)
+        ], 10)
+
+    def test_single_quote(self):
+        portfolio = PortfolioInput(self.portfolio.positions[:1], 0)
+        with patch.object(portfolio_data.api, 'get_global_quote',
+                          return_value={'Global Quote': {'05. price': '12.50'}}) as quote:
+            self.assertEqual(portfolio_data.get_portfolio_prices(portfolio), {'ZZZ': 12.5})
+            quote.assert_called_once_with('ZZZ')
+
+    def test_multiple_quotes_in_order_once_each(self):
+        with patch.object(portfolio_data.api, 'get_global_quote', side_effect=[
+            {'Global Quote': {'05. price': '15'}}, {'Global Quote': {'05. price': '20'}}
+        ]) as quote:
+            prices = portfolio_data.get_portfolio_prices(self.portfolio)
+            self.assertEqual(prices, {'ZZZ': 15, 'AAA': 20})
+            self.assertEqual(list(prices), ['ZZZ', 'AAA'])
+            self.assertEqual(quote.call_args_list, [call('ZZZ'), call('AAA')])
+
+    def test_one_failure_continues_without_retry(self):
+        with patch.object(portfolio_data.api, 'get_global_quote', side_effect=[
+            RuntimeError('Alpha Vantage Information: Fixture limit'),
+            {'Global Quote': {'05. price': '20'}}
+        ]) as quote, self.assertLogs(portfolio_data.__name__, level='WARNING') as logs:
+            self.assertEqual(portfolio_data.get_portfolio_prices(self.portfolio),
+                             {'ZZZ': None, 'AAA': 20})
+            self.assertEqual(quote.call_args_list, [call('ZZZ'), call('AAA')])
+        self.assertIn('Alpha Vantage Information: Fixture limit', logs.output[0])
+
+    def test_all_failures(self):
+        with patch.object(portfolio_data.api, 'get_global_quote',
+                          side_effect=RuntimeError('Fixture unavailable')) as quote, \
+             self.assertLogs(portfolio_data.__name__, level='WARNING'):
+            self.assertEqual(portfolio_data.get_portfolio_prices(self.portfolio),
+                             {'ZZZ': None, 'AAA': None})
+            self.assertEqual(quote.call_args_list, [call('ZZZ'), call('AAA')])
+
+    def test_empty_no_requests(self):
+        with patch.object(portfolio_data.api, 'get_global_quote') as quote:
+            self.assertEqual(portfolio_data.get_portfolio_prices(PortfolioInput([], 10)), {})
+            quote.assert_not_called()
+
+    def test_unusable_prices_and_zero(self):
+        for value, expected in [(None, None), ('invalid', None), ('NaN', None),
+                                ('Infinity', None), ('-1', None), ('0', 0)]:
+            with self.subTest(value=value), patch.object(
+                portfolio_data.api, 'get_global_quote', side_effect=[
+                    {'Global Quote': {'05. price': value}}, {}
+                ]
+            ) as quote:
+                self.assertEqual(portfolio_data.get_portfolio_prices(self.portfolio),
+                                 {'ZZZ': expected, 'AAA': None})
+                self.assertEqual(quote.call_count, 2)
+
+    def test_snapshot_delegates_to_existing_calculator(self):
+        with patch.object(portfolio_data.api, 'get_global_quote', side_effect=[
+            {'Global Quote': {'05. price': '15'}}, {'Global Quote': {'05. price': '20'}}
+        ]) as quote, patch.object(portfolio_data, 'build_portfolio_snapshot',
+                                 wraps=build_portfolio_snapshot) as calculator:
+            snapshot = portfolio_data.build_live_portfolio_snapshot(self.portfolio)
+            calculator.assert_called_once_with(self.portfolio, {'ZZZ': 15, 'AAA': 20})
+            self.assertEqual(snapshot.total_portfolio_value, 60)
+            self.assertEqual(snapshot.positions[0].portfolio_weight, .5)
+            self.assertEqual(quote.call_count, 2)
+
+    def test_missing_price_integration(self):
+        with patch.object(portfolio_data.api, 'get_global_quote', side_effect=[
+            {}, {'Global Quote': {'05. price': '20'}}
+        ]) as quote:
+            snapshot = portfolio_data.build_live_portfolio_snapshot(self.portfolio)
+            self.assertIsNone(snapshot.total_positions_value)
+            self.assertIsNone(snapshot.total_portfolio_value)
+            self.assertIsNone(snapshot.cash_weight)
+            self.assertIsNone(snapshot.largest_position_ticker)
+            self.assertTrue(all(p.portfolio_weight is None for p in snapshot.positions))
+            self.assertEqual(snapshot.positions[1].position_value, 20)
+            self.assertEqual(quote.call_count, 2)
+
+
+if __name__ == '__main__':
     unittest.main()
