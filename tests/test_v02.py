@@ -446,5 +446,133 @@ class PortfolioPolicyTests(unittest.TestCase):
         self.assertEqual((snapshot, policy), before)
 
 
+class PortfolioAnalysisTests(unittest.TestCase):
+    def setUp(self):
+        from src.portfolio_context import build_portfolio_analysis_context
+        from test_v01 import evidence, payload
+        self.data = evidence()
+        self.payload = payload(self.data)
+        self.payload['portfolio_assessment'] = 'Fixture portfolio interpretation.'
+        self.snapshot = build_portfolio_snapshot(PortfolioInput([
+            PortfolioPositionInput('TEST', 2, 10)], 10), {'TEST': 20})
+        self.risk = assess_portfolio_risk(self.snapshot)
+        self.builder = build_portfolio_analysis_context
+        self.context = self.builder(self.snapshot, self.risk, ' test ')
+        blocker = patch('socket.socket.connect', side_effect=AssertionError('Network forbidden'))
+        blocker.start()
+        self.addCleanup(blocker.stop)
+
+    def test_owned_context_and_provenance(self):
+        c = self.context
+        self.assertTrue(c.owns_target)
+        self.assertEqual((c.target_ticker, c.target_shares, c.target_average_cost), ('TEST', 2, 10))
+        self.assertEqual((c.target_current_price, c.target_position_value,
+                          c.target_unrealized_gain_loss, c.target_unrealized_gain_loss_percent),
+                         (20, 40, 20, 1))
+        self.assertEqual(c.target_portfolio_weight, .8)
+        for name in ('cash_weight', 'largest_position_ticker', 'largest_position_weight',
+                     'top_3_weight', 'herfindahl_index', 'effective_position_count'):
+            self.assertEqual(getattr(c, name), getattr(self.snapshot, name))
+        self.assertEqual(c.portfolio_risk_assessment, self.risk)
+
+    def test_not_owned(self):
+        c = self.builder(self.snapshot, self.risk, 'OTHER')
+        self.assertFalse(c.owns_target)
+        self.assertEqual(c.target_shares, 0)
+        self.assertIsNone(c.target_average_cost)
+        self.assertIsNone(c.target_current_price)
+        self.assertEqual(c.target_position_value, 0)
+        self.assertEqual(c.target_portfolio_weight, 0)
+
+    def test_missing_valuation(self):
+        s = build_portfolio_snapshot(PortfolioInput([PortfolioPositionInput('TEST', 1, 10)], 0), {})
+        for ticker in ('TEST', 'OTHER'):
+            c = self.builder(s, assess_portfolio_risk(s), ticker)
+            self.assertIsNone(c.target_portfolio_weight)
+            self.assertFalse(c.portfolio_risk_assessment.concentration_policy_evaluable)
+
+    def test_no_mutation_or_alias(self):
+        before = copy.deepcopy((self.snapshot, self.risk))
+        c = self.builder(self.snapshot, self.risk, 'TEST')
+        c.portfolio_risk_assessment.notes.append('Local change')
+        self.assertEqual((self.snapshot, self.risk), before)
+
+    def test_zero_shares_not_owned(self):
+        s = build_portfolio_snapshot(PortfolioInput([PortfolioPositionInput('TEST', 0, 10)], 100), {'TEST': 20})
+        self.assertFalse(self.builder(s, assess_portfolio_risk(s), 'TEST').owns_target)
+
+    def test_request_and_parsing(self):
+        import json
+        from src import analysis
+        from dataclasses import asdict
+        with patch.object(analysis, 'request_text', return_value=json.dumps(self.payload)) as request:
+            result = analysis.analyze_investment(self.data, self.context)
+        request.assert_called_once()
+        sent = json.loads(request.call_args.kwargs['input'])
+        self.assertEqual(sent['PORTFOLIO_CONTEXT'], asdict(self.context))
+        self.assertEqual(sent['evidence_package'], self.data)
+        self.assertEqual(result.portfolio_assessment, self.payload['portfolio_assessment'])
+        self.assertEqual(result.missing_data, self.data['missing_data'])
+        schema = request.call_args.kwargs['text']['format']['schema']
+        self.assertIn('portfolio_assessment', schema['required'])
+        self.assertIn('Avoid sunk-cost reasoning', request.call_args.kwargs['instructions'])
+
+    def test_required_assessment(self):
+        from src import analysis
+        for value in (None, '', ' '):
+            bad = copy.deepcopy(self.payload)
+            bad['portfolio_assessment'] = value
+            with self.assertRaises(ValueError):
+                analysis._validate_analysis(bad, self.data, self.context)
+        bad = copy.deepcopy(self.payload)
+        del bad['portfolio_assessment']
+        with self.assertRaises(ValueError):
+            analysis._validate_analysis(bad, self.data, self.context)
+
+    def test_existing_strict_validation_with_context(self):
+        from src import analysis
+        for recommendation in ('Buy', 'Accumulate', 'Hold', 'Trim', 'Avoid'):
+            for confidence in (0, 100):
+                good = copy.deepcopy(self.payload)
+                good.update(recommendation=recommendation, confidence_score=confidence)
+                analysis._validate_analysis(good, self.data, self.context)
+        for field, value in [('recommendation', 'Sell'), ('confidence_score', -1),
+                             ('confidence_score', 101), ('material_evidence_review', {})]:
+            bad = copy.deepcopy(self.payload)
+            bad[field] = value
+            with self.assertRaises(ValueError):
+                analysis._validate_analysis(bad, self.data, self.context)
+        for ref in ('E999', 'retrieved_facts.stock.pe_ratio'):
+            bad = copy.deepcopy(self.payload)
+            bad['bull_case'][0]['evidence_refs'] = [ref]
+            with self.assertRaises(ValueError):
+                analysis._validate_analysis(bad, self.data, self.context)
+
+    def test_no_context_unchanged(self):
+        import json
+        from src import analysis
+        from test_v01 import payload
+        with patch.object(analysis, 'request_text', return_value=json.dumps(payload(self.data))) as request:
+            result = analysis.analyze_investment(self.data)
+        self.assertEqual(result.portfolio_assessment, 'Portfolio context not supplied.')
+        self.assertNotIn('PORTFOLIO_CONTEXT', json.loads(request.call_args.kwargs['input']))
+        self.assertEqual(request.call_args.kwargs['instructions'], analysis.INSTRUCTIONS)
+        self.assertNotIn('portfolio_assessment', request.call_args.kwargs['text']['format']['schema']['required'])
+
+    def test_missing_context_limitation_preserved(self):
+        from src import analysis
+        self.context.portfolio_risk_assessment.concentration_policy_evaluable = False
+        result = analysis._validate_analysis(self.payload, self.data, self.context)
+        self.assertTrue(any('Portfolio concentration policy unavailable' in item for item in result.missing_data))
+        self.assertTrue(all(item in result.missing_data for item in self.data['missing_data']))
+
+    def test_mismatched_ticker_no_request(self):
+        from src import analysis
+        self.context.target_ticker = 'OTHER'
+        with patch.object(analysis, 'request_text') as request, self.assertRaises(ValueError):
+            analysis.analyze_investment(self.data, self.context)
+        request.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

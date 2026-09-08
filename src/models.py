@@ -146,6 +146,7 @@ class InvestmentAnalysis:
     missing_data: list[str]
     reasoning_summary: str
     material_evidence_review: dict[str, MaterialEvidenceReview]
+    portfolio_assessment: str = "Portfolio context not supplied."
 
 
 def _validate_portfolio_amount(value: float, name: str) -> None:
@@ -267,3 +268,25 @@ class PortfolioRiskAssessment:
     minimum_cash_below_target: bool | None
     concentration_policy_evaluable: bool
     notes: list[str]
+
+
+@dataclass
+class PortfolioAnalysisContext:
+    """Deterministic portfolio inputs, kept separate from stock evidence IDs."""
+
+    target_ticker: str
+    owns_target: bool
+    target_shares: float
+    target_average_cost: float | None
+    target_current_price: float | None
+    target_position_value: float | None
+    target_unrealized_gain_loss: float | None
+    target_unrealized_gain_loss_percent: float | None
+    target_portfolio_weight: float | None
+    cash_weight: float | None
+    largest_position_ticker: str | None
+    largest_position_weight: float | None
+    top_3_weight: float | None
+    herfindahl_index: float | None
+    effective_position_count: float | None
+    portfolio_risk_assessment: PortfolioRiskAssessment
