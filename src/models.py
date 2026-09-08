@@ -239,3 +239,31 @@ class PortfolioSnapshot:
     position_count: int
     effective_position_count: float | None
     herfindahl_index: float | None
+
+
+@dataclass
+class PortfolioRiskPolicy:
+    """Configured portfolio limits, not investment recommendations."""
+
+    max_single_position_weight: float = 0.25
+    max_top_3_weight: float = 0.60
+    minimum_cash_weight: float = 0.05
+
+    def __post_init__(self):
+        for name in ('max_single_position_weight', 'max_top_3_weight', 'minimum_cash_weight'):
+            value = getattr(self, name)
+            _validate_portfolio_amount(value, name)
+            if value > 1:
+                raise ValueError(f"{name} must be between 0 and 1.")
+
+
+@dataclass
+class PortfolioRiskAssessment:
+    """Deterministic policy outputs only; no investment judgment or action."""
+
+    oversized_positions: list[str]
+    largest_position_over_limit: bool | None
+    top_3_concentration_over_limit: bool | None
+    minimum_cash_below_target: bool | None
+    concentration_policy_evaluable: bool
+    notes: list[str]

@@ -9,6 +9,8 @@ from src.models import (
 )
 
 
+from src.models import PortfolioRiskPolicy
+from src.portfolio_risk import assess_portfolio_risk
 from src import portfolio_data
 from src.portfolio_calculations import build_portfolio_snapshot
 
@@ -360,6 +362,88 @@ class ConcentrationTests(unittest.TestCase):
         self.assertEqual([p.ticker for p in s.positions], ['ZZZ', 'AAA'])
         self.assertEqual([p.position_value for p in s.positions], [10, 10])
         self.assertEqual(s.largest_position_ticker, 'ZZZ')
+
+
+class PortfolioPolicyTests(unittest.TestCase):
+    def snapshot(self, values, cash=0):
+        return build_portfolio_snapshot(PortfolioInput([
+            PortfolioPositionInput(ticker, 1, 1) for ticker in values
+        ], cash), values)
+
+    def test_defaults(self):
+        self.assertEqual(PortfolioRiskPolicy(), PortfolioRiskPolicy(.25, .60, .05))
+
+    def test_invalid_thresholds(self):
+        for name in ('max_single_position_weight', 'max_top_3_weight', 'minimum_cash_weight'):
+            for value in (-.1, 1.1, float('nan'), float('inf'), True):
+                with self.subTest(name=name, value=value), self.assertRaises(ValueError):
+                    PortfolioRiskPolicy(**{name: value})
+        PortfolioRiskPolicy(0, 1, 0)
+
+    def test_single_oversized(self):
+        result = assess_portfolio_risk(self.snapshot({'AAA': 80}, 20))
+        self.assertEqual(result.oversized_positions, ['AAA'])
+        self.assertTrue(result.largest_position_over_limit)
+        self.assertIn('AAA exceeds max single-position weight.', result.notes)
+
+    def test_multiple_preserve_order(self):
+        result = assess_portfolio_risk(self.snapshot({'ZZZ': 40, 'AAA': 50}, 10))
+        self.assertEqual(result.oversized_positions, ['ZZZ', 'AAA'])
+
+    def test_exact_single_boundary(self):
+        result = assess_portfolio_risk(self.snapshot({'AAA': 25}, 75))
+        self.assertEqual(result.oversized_positions, [])
+        self.assertFalse(result.largest_position_over_limit)
+
+    def test_top_three_over_and_boundary(self):
+        self.assertTrue(assess_portfolio_risk(self.snapshot({'AAA': 61}, 39)).top_3_concentration_over_limit)
+        self.assertFalse(assess_portfolio_risk(self.snapshot({'AAA': 60}, 40)).top_3_concentration_over_limit)
+
+    def test_cash_below_and_boundary(self):
+        self.assertTrue(assess_portfolio_risk(self.snapshot({'AAA': 96}, 4)).minimum_cash_below_target)
+        self.assertFalse(assess_portfolio_risk(self.snapshot({'AAA': 95}, 5)).minimum_cash_below_target)
+
+    def test_compliant(self):
+        result = assess_portfolio_risk(self.snapshot({'AAA': 10, 'BBB': 20}, 70))
+        self.assertTrue(result.concentration_policy_evaluable)
+        self.assertEqual(result.notes, [])
+        self.assertFalse(result.largest_position_over_limit)
+        self.assertFalse(result.top_3_concentration_over_limit)
+        self.assertFalse(result.minimum_cash_below_target)
+
+    def test_missing_price(self):
+        result = assess_portfolio_risk(self.snapshot({'AAA': 10, 'BBB': None}, 70))
+        self.assertFalse(result.concentration_policy_evaluable)
+        self.assertEqual(result.oversized_positions, [])
+        self.assertIsNone(result.largest_position_over_limit)
+        self.assertIsNone(result.top_3_concentration_over_limit)
+        self.assertIsNone(result.minimum_cash_below_target)
+        self.assertIn('prices are missing', result.notes[0])
+
+    def test_empty_cash_only(self):
+        result = assess_portfolio_risk(self.snapshot({}, 100))
+        self.assertTrue(result.concentration_policy_evaluable)
+        self.assertFalse(result.largest_position_over_limit)
+        self.assertFalse(result.top_3_concentration_over_limit)
+        self.assertFalse(result.minimum_cash_below_target)
+        self.assertEqual(result.oversized_positions, [])
+        self.assertEqual(result.notes, [])
+
+    def test_zero_total_undefined(self):
+        result = assess_portfolio_risk(self.snapshot({}))
+        self.assertFalse(result.concentration_policy_evaluable)
+        self.assertIsNone(result.minimum_cash_below_target)
+        self.assertIn('undefined', result.notes[0])
+
+    def test_custom_policy_and_immutability(self):
+        snapshot = self.snapshot({'AAA': 40}, 60)
+        policy = PortfolioRiskPolicy(.5, .3, .7)
+        before = copy.deepcopy((snapshot, policy))
+        result = assess_portfolio_risk(snapshot, policy)
+        self.assertFalse(result.largest_position_over_limit)
+        self.assertTrue(result.top_3_concentration_over_limit)
+        self.assertTrue(result.minimum_cash_below_target)
+        self.assertEqual((snapshot, policy), before)
 
 
 if __name__ == '__main__':
