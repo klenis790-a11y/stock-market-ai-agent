@@ -172,21 +172,6 @@ def _reference_error(paths: list[str]) -> ValueError:
     return ValueError(f"Analysis contains invalid evidence {label}: {', '.join(safe_paths)}")
 
 
-def _resolve_reference(evidence: dict, path: str):
-    value = evidence
-    for part in path.split("."):
-        if isinstance(value, dict) and part in value:
-            value = value[part]
-        elif isinstance(value, list) and part.isascii() and part.isdigit():
-            index = int(part)
-            if str(index) != part or index >= len(value):
-                raise _reference_error([path])
-            value = value[index]
-        else:
-            raise _reference_error([path])
-    return value
-
-
 def _validate_analysis(data: dict, evidence: dict) -> InvestmentAnalysis:
     if not isinstance(data, dict) or set(data) != set(ANALYSIS_SCHEMA["required"]):
         raise ValueError("Analysis has missing or unexpected fields.")

@@ -23,7 +23,6 @@ def build_valid_evidence_references(evidence_package: dict) -> list[str]:
 
     for root in ("retrieved_facts", "calculated_metrics"):
         visit(evidence_package.get(root), root)
-    # The existing prompt/validator intentionally support citing missing-data context.
     visit(evidence_package.get("missing_data"), "missing_data")
     return references
 
