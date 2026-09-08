@@ -146,3 +146,90 @@ class InvestmentAnalysis:
     missing_data: list[str]
     reasoning_summary: str
     material_evidence_review: dict[str, MaterialEvidenceReview]
+
+
+def _validate_portfolio_amount(value: float, name: str) -> None:
+    # NaN/infinity and booleans are not usable user-supplied quantities.
+    from math import isfinite
+
+    if type(value) not in (int, float) or not isfinite(value) or value < 0:
+        raise ValueError(f"{name} must be a finite non-negative number.")
+
+
+@dataclass
+class PortfolioPositionInput:
+    """User-supplied long-only holding. Zero-share positions are retained.
+
+    Validation occurs at construction; no prices or metrics are inferred.
+    """
+
+    ticker: str
+    shares: float
+    average_cost: float
+
+    def __post_init__(self):
+        if not isinstance(self.ticker, str) or not self.ticker.strip():
+            raise ValueError("A non-empty portfolio ticker is required.")
+        self.ticker = self.ticker.strip().upper()
+        _validate_portfolio_amount(self.shares, "shares")
+        _validate_portfolio_amount(self.average_cost, "average_cost")
+
+
+@dataclass
+class PortfolioInput:
+    """User-supplied holdings and cash; duplicate normalized tickers are rejected.
+
+    Separate lots are never merged. An empty positions list permits cash-only input.
+    """
+
+    positions: list[PortfolioPositionInput]
+    cash: float
+
+    def __post_init__(self):
+        _validate_portfolio_amount(self.cash, "cash")
+        if not isinstance(self.positions, list) or not all(
+            isinstance(position, PortfolioPositionInput) for position in self.positions
+        ):
+            raise ValueError("positions must be a list of PortfolioPositionInput objects.")
+        tickers = [position.ticker.strip().upper() for position in self.positions]
+        if len(tickers) != len(set(tickers)):
+            raise ValueError("Duplicate portfolio tickers are not allowed.")
+
+
+@dataclass
+class PortfolioPosition:
+    """Output contract: copied inputs, retrieved latest available price, and metrics.
+
+    All fields after current_price are deterministic calculated metrics, not AI
+    interpretations. Ratios/percent changes use decimals (0.10 means 10%). None
+    represents unavailable results; construction performs no calculations.
+    """
+
+    ticker: str
+    shares: float
+    average_cost: float
+    current_price: float | None
+    cost_basis: float
+    position_value: float | None
+    unrealized_gain_loss: float | None
+    unrealized_gain_loss_percent: float | None
+    portfolio_weight: float | None
+
+
+@dataclass
+class PortfolioSnapshot:
+    """Copied user cash and positions with deterministic totals/concentration.
+
+    Intended future flow: PortfolioInput -> retrieve latest available prices ->
+    deterministic calculations -> PortfolioSnapshot + existing ResearchSnapshot
+    -> portfolio-aware analysis. No retrieval, AI interpretation, or forecast is
+    implemented here. Weights are decimal fractions; unavailable metrics are None.
+    """
+
+    positions: list[PortfolioPosition]
+    cash: float
+    total_positions_value: float | None
+    total_portfolio_value: float | None
+    cash_weight: float | None
+    largest_position_ticker: str | None
+    largest_position_weight: float | None
