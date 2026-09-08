@@ -574,5 +574,120 @@ class PortfolioAnalysisTests(unittest.TestCase):
         request.assert_not_called()
 
 
+class PortfolioPipelineTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        from src import alpha_vantage_client as api, analysis, portfolio_research_pipeline
+        import json
+        from test_v01 import payload
+        self.pipeline = portfolio_research_pipeline
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')))
+        self.stack.enter_context(patch('logging.Logger.warning'))
+        responses = {
+            'get_company_overview': {'Symbol': 'TEST', 'Name': 'Fixture company'},
+            'get_global_quote': {'Global Quote': {'05. price': '20'}},
+            'get_income_statement': {'annualReports': []},
+            'get_balance_sheet': {'annualReports': []},
+            'get_cash_flow': {'annualReports': []},
+            'get_earnings': {'quarterlyEarnings': [{'fiscalDateEnding': '2025-06-30'}]},
+            'get_news_sentiment': {'feed': []},
+            'get_earnings_call_transcript': {'transcript': [{'content': 'Fixture transcript'}]},
+        }
+        self.providers = {}
+        for name, response in responses.items():
+            mock = self.stack.enter_context(patch.object(api, name, return_value=response))
+            mock.__name__ = name
+            self.providers[name] = mock
+        self.inputs = []
+        def respond(**kwargs):
+            data = json.loads(kwargs['input'])
+            self.inputs.append(data)
+            result = payload(data['evidence_package'])
+            result['portfolio_assessment'] = 'Fixture portfolio interpretation.'
+            return json.dumps(result)
+        self.request = self.stack.enter_context(patch.object(analysis, 'request_text', side_effect=respond))
+        self.analyze = self.stack.enter_context(patch.object(
+            self.pipeline, 'analyze_investment', wraps=analysis.analyze_investment))
+
+    def test_owned_success_context_counts_and_immutability(self):
+        from src.models import InvestmentAnalysis
+        portfolio = PortfolioInput([PortfolioPositionInput('TEST', 2, 10)], 10)
+        before = copy.deepcopy(portfolio)
+        result = self.pipeline.run_portfolio_aware_research(' test ', portfolio)
+        self.assertIsInstance(result, InvestmentAnalysis)
+        self.assertEqual(result.ticker, 'TEST')
+        self.assertEqual(portfolio, before)
+        self.analyze.assert_called_once()
+        self.request.assert_called_once()
+        context = self.inputs[0]['PORTFOLIO_CONTEXT']
+        self.assertTrue(context['owns_target'])
+        self.assertEqual(context['target_portfolio_weight'], .8)
+        self.assertEqual(context['portfolio_risk_assessment']['oversized_positions'], ['TEST'])
+        self.assertTrue(context['portfolio_risk_assessment']['largest_position_over_limit'])
+        # One portfolio quote plus the documented independent stock quote.
+        self.assertEqual(self.providers['get_global_quote'].call_args_list, [call('TEST'), call('TEST')])
+        for name, mock in self.providers.items():
+            if name != 'get_global_quote':
+                mock.assert_called_once()
+
+    def test_unowned_success(self):
+        portfolio = PortfolioInput([PortfolioPositionInput('OTHER', 1, 10)], 20)
+        self.pipeline.run_portfolio_aware_research('TEST', portfolio)
+        context = self.inputs[0]['PORTFOLIO_CONTEXT']
+        self.assertFalse(context['owns_target'])
+        self.assertEqual(context['target_shares'], 0)
+        self.assertEqual(context['target_portfolio_weight'], 0)
+        self.assertEqual(self.providers['get_global_quote'].call_args_list, [call('OTHER'), call('TEST')])
+        self.request.assert_called_once()
+
+    def test_empty_cash_only(self):
+        self.pipeline.run_portfolio_aware_research('TEST', PortfolioInput([], 100))
+        context = self.inputs[0]['PORTFOLIO_CONTEXT']
+        self.assertFalse(context['owns_target'])
+        self.assertEqual(context['cash_weight'], 1)
+        self.assertEqual(context['top_3_weight'], 0)
+        self.providers['get_global_quote'].assert_called_once_with('TEST')
+        self.request.assert_called_once()
+
+    def test_missing_portfolio_quote_continues(self):
+        self.providers['get_global_quote'].side_effect = [RuntimeError('Fixture unavailable'),
+                                                        {'Global Quote': {'05. price': '20'}}]
+        result = self.pipeline.run_portfolio_aware_research(
+            'TEST', PortfolioInput([PortfolioPositionInput('TEST', 1, 10)], 20))
+        context = self.inputs[0]['PORTFOLIO_CONTEXT']
+        self.assertIsNone(context['target_portfolio_weight'])
+        self.assertFalse(context['portfolio_risk_assessment']['concentration_policy_evaluable'])
+        self.assertTrue(any('Portfolio concentration policy unavailable' in x for x in result.missing_data))
+        self.request.assert_called_once()
+        self.assertEqual(self.providers['get_global_quote'].call_count, 2)
+
+    def test_critical_failure_stops_analysis(self):
+        for name in ('get_company_overview', 'get_income_statement', 'get_balance_sheet',
+                     'get_cash_flow', 'get_earnings'):
+            with self.subTest(endpoint=name):
+                self.providers[name].side_effect = RuntimeError('Fixture critical failure')
+                with self.assertRaises(RuntimeError):
+                    self.pipeline.run_portfolio_aware_research('TEST', PortfolioInput([], 100))
+                self.providers[name].side_effect = None
+                self.analyze.assert_not_called()
+                self.request.assert_not_called()
+
+    def test_invalid_target_no_requests(self):
+        with self.assertRaises(ValueError):
+            self.pipeline.run_portfolio_aware_research(' ', PortfolioInput([], 100))
+        for mock in self.providers.values():
+            mock.assert_not_called()
+        self.request.assert_not_called()
+
+    def test_analysis_failure_propagates_without_retry(self):
+        self.request.side_effect = RuntimeError('OpenAI connection failed or timed out.')
+        with self.assertRaisesRegex(RuntimeError, 'OpenAI connection'):
+            self.pipeline.run_portfolio_aware_research('TEST', PortfolioInput([], 100))
+        self.analyze.assert_called_once()
+        self.request.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

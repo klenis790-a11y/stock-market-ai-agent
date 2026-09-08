@@ -19,7 +19,8 @@ def _retrieve_optional(function, *args) -> dict:
         return {}
 
 
-def run_stock_research(ticker: str) -> InvestmentAnalysis:
+def build_stock_evidence(ticker: str) -> dict:
+    """Retrieve and assemble stock evidence without requesting AI analysis."""
     if not isinstance(ticker, str) or not ticker.strip():
         raise ValueError("A non-empty ticker is required.")
     ticker = ticker.strip().upper()
@@ -56,4 +57,8 @@ def run_stock_research(ticker: str) -> InvestmentAnalysis:
             _retrieve_optional(api.get_earnings_call_transcript, ticker, quarter)
         )
     snapshot = build_research_snapshot(stock, income, balance, cash, earnings, news, transcript)
-    return analyze_investment(build_evidence_package(snapshot))
+    return build_evidence_package(snapshot)
+
+
+def run_stock_research(ticker: str) -> InvestmentAnalysis:
+    return analyze_investment(build_stock_evidence(ticker))
