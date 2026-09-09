@@ -72,7 +72,7 @@ Each dataset is attempted at most once per run, in this order:
 
 Critical retrieval errors stop before analysis. Non-critical retrieval errors are logged safely and become unavailable evidence with deterministic missing-data entries. Missing individual values remain missing. Analysis/API/validation failures stop without fabricating a recommendation.
 
-Alpha Vantage requests are paced at a minimum **1.0-second interval** within the process. This does not enforce daily quotas. A complete run uses at most eight Alpha Vantage requests and one OpenAI analysis request. There are no automatic retries.
+Alpha Vantage requests are paced at a minimum **1.0-second interval** within the process. This does not enforce daily quotas. A complete standalone V0.1 run uses at most eight Alpha Vantage requests and one OpenAI analysis request. There are no automatic retries.
 
 ## Tests
 
@@ -123,3 +123,30 @@ No portfolios are saved. Stock research runs first; its target quote is reused f
 including an unavailable price without retry. Other holdings are quoted once.
 Existing pacing applies. V0.1 scope statements above
 refer to standalone mode; V0.2 adds portfolio context without trading or persistence.
+
+Python calculates position value, cost basis, unrealized gain/loss and decimal returns,
+portfolio totals and weights, largest-position weight, top-three weight, HHI and effective
+position count. Cash is included in the weight denominator but is not a stock position
+in HHI; consequently effective position count can exceed the actual number of holdings.
+Zero-share entries are retained. Any missing position price makes aggregate valuation,
+weights and concentration unavailable; no partial valuation is treated as complete.
+
+The deterministic policy defaults flag single-position weights above 25%, top-three
+weight above 60%, and cash weight below 5%. Exact boundaries are not flagged. These
+are configurable policy comparisons, not universal risk judgments or automatic actions.
+Undefined inputs remain unknown; an empty portfolio with positive cash is supported.
+
+OpenAI receives the separate deterministic portfolio context, including the target's
+ownership, cost/gain context, allocation and policy flags. It explains stock attractiveness
+versus portfolio suitability in `portfolio_assessment`; cost basis is not intrinsic value.
+Stock citations and material reviews retain their existing validation. Portfolio prose
+and policy consistency still require human review; structural checks do not prove them.
+Portfolio context is sent to OpenAI along with stock research evidence.
+
+A complete V0.2 run adds one quote request per non-target holding to the standalone
+request budget, with exactly one analysis request. Quotes for different holdings may
+cover different market dates; portfolio models do not retain quote dates or reconcile
+currencies, so valuation assumes comparable currency units. V0.2 adds no broker access,
+orders, portfolio persistence, optimization, backtesting, dashboards or price prediction.
+The offline suite covers input parsing, valuation, concentration, policy boundaries,
+quote reuse/degradation, CLI routing and mocked portfolio-aware analysis.
