@@ -688,5 +688,115 @@ class HistoryCLITests(unittest.TestCase):
         self.assertNotIn('Traceback', text)
 
 
+class OptionalMemoryAnalysisTests(unittest.TestCase):
+    def setUp(self):
+        from src.models import DecisionMemoryContext, DecisionMemoryItem
+        from test_v01 import evidence, payload
+        from unittest.mock import patch
+        self.data = evidence()
+        self.good = payload(self.data)
+        self.memory = DecisionMemoryContext('TEST', [DecisionMemoryItem(
+            'past', 'TEST', '2025-01-01', 'Hold', 60, None, 'Past reasoning',
+            [InterpretationStatement('Historical risk', ['E001'])],
+            [ForecastStatement('Past condition', ['E001'])], [], ['Past missing'], [outcome()])])
+        blocker = patch('socket.socket.connect', side_effect=AssertionError('Network forbidden'))
+        blocker.start()
+        self.addCleanup(blocker.stop)
+
+    def test_none_request_unchanged(self):
+        import json
+        from unittest.mock import patch
+        from src import analysis
+        with patch.object(analysis, 'request_text', return_value=json.dumps(self.good)) as request:
+            analysis.analyze_investment(self.data)
+            first = request.call_args
+            analysis.analyze_investment(self.data, memory_context=None)
+            self.assertEqual(first, request.call_args)
+            self.assertEqual(first.kwargs['instructions'], analysis.INSTRUCTIONS)
+            self.assertNotIn('HISTORICAL_DECISION_MEMORY', json.loads(first.kwargs['input']))
+
+    def test_serialization_scope_determinism_and_isolation(self):
+        from copy import deepcopy
+        from src.decision_memory import serialize_decision_memory
+        before = deepcopy(self.memory)
+        data = serialize_decision_memory(self.memory)
+        self.assertEqual(data, serialize_decision_memory(self.memory))
+        item = data['prior_decisions'][0]
+        self.assertEqual(set(item), {'decision_id', 'ticker', 'decision_timestamp', 'recommendation',
+                                    'confidence_score', 'investment_horizon', 'reasoning_summary',
+                                    'major_risks', 'thesis_invalidation_conditions', 'scenarios', 'missing_data', 'outcomes'})
+        self.assertEqual(item['major_risks'], ['Historical risk'])
+        self.assertNotIn('E001', str(data))
+        item['missing_data'].append('Changed')
+        item['outcomes'][0]['stock_return'] = 999
+        self.assertEqual(self.memory, before)
+
+    def test_memory_input_current_catalog_unchanged(self):
+        import json
+        from copy import deepcopy
+        from unittest.mock import patch
+        from src import analysis
+        from src.evidence import build_evidence_catalog
+        before = deepcopy(self.memory)
+        with patch.object(analysis, 'request_text', return_value=json.dumps(self.good)) as request:
+            result = analysis.analyze_investment(self.data, memory_context=self.memory)
+        request.assert_called_once()
+        sent = json.loads(request.call_args.kwargs['input'])
+        self.assertIn('HISTORICAL_DECISION_MEMORY', sent)
+        self.assertEqual(sent['evidence_package'], self.data)
+        self.assertEqual(sent['EVIDENCE_CATALOG'], build_evidence_catalog(self.data))
+        self.assertEqual(result.missing_data, self.data['missing_data'])
+        self.assertEqual(self.memory, before)
+        instructions = request.call_args.kwargs['instructions']
+        for text in ('CURRENT VERIFIED EVIDENCE', 'HISTORICAL DECISION MEMORY',
+                     'authoritative for current facts', 'Missing current evidence must remain missing',
+                     'Previous recommendations are not evidence', 'cannot\nsatisfy current material-evidence review',
+                     'what was knowable at decision time'):
+            self.assertIn(text, instructions)
+
+    def test_memory_does_not_relax_coverage_or_ids(self):
+        import json
+        from copy import deepcopy
+        from unittest.mock import patch
+        from src import analysis
+        for field in ('material_evidence_review', 'bull_case'):
+            bad = deepcopy(self.good)
+            if field == 'material_evidence_review':
+                bad[field] = {}
+            else:
+                bad[field][0]['evidence_refs'] = ['past']
+            with patch.object(analysis, 'request_text', return_value=json.dumps(bad)), self.assertRaises(ValueError):
+                analysis.analyze_investment(self.data, memory_context=self.memory)
+
+    def test_both_pipelines_forward_without_history_queries(self):
+        from unittest.mock import patch
+        from contextlib import ExitStack
+        from src import analysis, research_pipeline, portfolio_research_pipeline
+        from src.models import PortfolioInput
+        from src.decision_store import DecisionStore
+        result = analysis._validate_analysis(self.good, self.data)
+        for module in (research_pipeline, portfolio_research_pipeline):
+            with ExitStack() as stack:
+                stack.enter_context(patch.object(module, 'build_stock_evidence', return_value=self.data))
+                analyze = stack.enter_context(patch.object(module, 'analyze_investment', return_value=result))
+                query = stack.enter_context(patch.object(DecisionStore, 'get_decisions_for_ticker', side_effect=AssertionError('No history query')))
+                if module is research_pipeline:
+                    returned = module.run_stock_research('TEST', memory_context=self.memory)
+                else:
+                    returned = module.run_portfolio_aware_research('TEST', PortfolioInput([], 100), memory_context=self.memory)
+                self.assertIs(returned, result)
+                analyze.assert_called_once()
+                self.assertIs(analyze.call_args.kwargs['memory_context'], self.memory)
+                query.assert_not_called()
+
+    def test_memory_ticker_mismatch_rejected(self):
+        from unittest.mock import patch
+        from src import analysis
+        self.memory.ticker = 'OTHER'
+        with patch.object(analysis, 'request_text') as request, self.assertRaises(ValueError):
+            analysis.analyze_investment(self.data, memory_context=self.memory)
+        request.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

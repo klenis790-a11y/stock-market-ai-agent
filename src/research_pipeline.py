@@ -8,7 +8,7 @@ from src import alpha_vantage_client as api
 from src import normalizers as normalize
 from src.analysis import analyze_investment
 from src.evidence import build_evidence_package
-from src.models import InvestmentAnalysis
+from src.models import DecisionMemoryContext, InvestmentAnalysis
 from src.research_snapshot import build_research_snapshot
 
 
@@ -65,12 +65,14 @@ def build_stock_evidence(ticker: str) -> dict:
 def run_stock_research(
     ticker: str, *, decision_store: DecisionStore | None = None,
     decision_timestamp: str | None = None, investment_horizon: str | None = None,
+    memory_context: DecisionMemoryContext | None = None,
 ) -> InvestmentAnalysis:
     if decision_store is not None and (
         not isinstance(decision_timestamp, str) or not decision_timestamp.strip()
     ):
         raise ValueError("decision_timestamp is required for decision persistence.")
-    result = analyze_investment(build_stock_evidence(ticker))
+    result = analyze_investment(build_stock_evidence(ticker),
+                                **({"memory_context": memory_context} if memory_context is not None else {}))
     if decision_store is not None:
         save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
     return result

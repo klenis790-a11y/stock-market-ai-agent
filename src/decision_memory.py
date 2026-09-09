@@ -36,3 +36,30 @@ def build_decision_memory_context(
             outcomes=store.get_outcomes_for_decision(record.decision_id),
         )))
     return context
+
+
+def serialize_decision_memory(context: DecisionMemoryContext) -> dict:
+    """Compact historical input; omit old evidence IDs to prevent catalog collisions.
+
+    Statement text remains historical context, not current citable evidence.
+    Decision IDs identify history records only. No source object is mutated.
+    """
+    from dataclasses import asdict
+
+    return {
+        'ticker': context.ticker,
+        'prior_decisions': [{
+            'decision_id': item.decision_id,
+            'ticker': item.ticker,
+            'decision_timestamp': item.decision_timestamp,
+            'recommendation': item.recommendation,
+            'confidence_score': item.confidence_score,
+            'investment_horizon': item.investment_horizon,
+            'reasoning_summary': item.reasoning_summary,
+            'major_risks': [statement.text for statement in item.major_risks],
+            'thesis_invalidation_conditions': [statement.text for statement in item.thesis_invalidation_conditions],
+            'scenarios': [statement.text for statement in item.scenarios],
+            'missing_data': list(item.missing_data),
+            'outcomes': [asdict(outcome) for outcome in item.outcomes],
+        } for item in context.prior_decisions],
+    }

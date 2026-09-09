@@ -4,7 +4,7 @@ from src.decision_store import DecisionStore
 from collections.abc import Callable
 
 from src.analysis import analyze_investment
-from src.models import InvestmentAnalysis, PortfolioInput, PortfolioAnalysisContext
+from src.models import DecisionMemoryContext, InvestmentAnalysis, PortfolioInput, PortfolioAnalysisContext
 from src.portfolio_context import build_portfolio_analysis_context
 from src.portfolio_data import build_live_portfolio_snapshot
 from src.portfolio_risk import assess_portfolio_risk
@@ -15,6 +15,7 @@ def run_portfolio_aware_research(
     target_ticker: str, portfolio_input: PortfolioInput,
     *, decision_store: DecisionStore | None = None,
     decision_timestamp: str | None = None, investment_horizon: str | None = None,
+    memory_context: DecisionMemoryContext | None = None,
     on_context: Callable[[PortfolioAnalysisContext], None] | None = None,
 ) -> InvestmentAnalysis:
     """Assemble portfolio and stock evidence, then request analysis exactly once.
@@ -35,7 +36,8 @@ def run_portfolio_aware_research(
     )
     risk = assess_portfolio_risk(snapshot)
     context = build_portfolio_analysis_context(snapshot, risk, ticker)
-    result = analyze_investment(evidence, context)
+    result = analyze_investment(evidence, context,
+                                **({"memory_context": memory_context} if memory_context is not None else {}))
     if on_context is not None:
         on_context(context)
     if decision_store is not None:
