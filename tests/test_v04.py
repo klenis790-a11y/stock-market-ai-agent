@@ -354,3 +354,105 @@ class FundamentalAITests(unittest.TestCase):
         self.mock.side_effect = RuntimeError('OpenAI request failed.')
         with self.assertRaises(RuntimeError): self.run_analysis()
         self.mock.assert_called_once()
+
+
+class RiskEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        # Reuse the normalized financial fixture without inheriting its test cases.
+        FundamentalEvidenceTests.setUp(self)
+        self.evidence['retrieved_facts']['balance_sheets'][0]['long_term_debt'] = 8
+        self.evidence['retrieved_facts']['earnings'][0].update(
+            fiscal_date_ending='2025-12-31', reported_date='2026-01-20',
+            reported_eps=2, estimated_eps=1.9)
+        self.evidence['calculated_metrics']['earnings_metrics'].update(
+            average_surprise_percentage=3, beats_last_4_quarters=4, misses_last_4_quarters=0)
+
+    def selected(self):
+        from src.specialists import select_risk_evidence
+        return select_risk_evidence(self.evidence)
+
+    def test_balance_and_cash_flow(self):
+        values = {e['path']: e['value'] for e in self.selected()['EVIDENCE_CATALOG']}
+        for group in ('balance_sheets', 'cash_flows'):
+            for name, value in self.evidence['retrieved_facts'][group][0].items():
+                self.assertEqual(values[f'retrieved_facts.{group}.0.{name}'], value)
+
+    def test_growth_leverage_and_earnings_metrics(self):
+        values = {e['path']: e['value'] for e in self.selected()['EVIDENCE_CATALOG']}
+        for group, names in (
+            ('balance_sheet_metrics', ('debt_to_equity', 'liabilities_to_assets', 'cash_to_debt')),
+            ('cash_flow_metrics', ('free_cash_flow', 'free_cash_flow_growth')),
+            ('income_statement_metrics', ('revenue_growth', 'net_income_growth')),
+            ('earnings_metrics', ('latest_surprise_percentage', 'average_surprise_percentage',
+                                 'beats_last_4_quarters', 'misses_last_4_quarters')),
+        ):
+            for name in names:
+                self.assertEqual(values[f'calculated_metrics.{group}.{name}'], self.evidence['calculated_metrics'][group][name])
+        self.assertEqual(values['retrieved_facts.earnings.0.reported_date'], '2026-01-20')
+        self.assertEqual(values['retrieved_facts.earnings.0.fiscal_date_ending'], '2025-12-31')
+
+    def test_provenance_and_overlap(self):
+        from src.evidence import build_evidence_catalog, resolve_evidence_id
+        from src.specialists import select_fundamental_evidence
+        catalog = build_evidence_catalog(self.evidence)
+        selected = self.selected()['EVIDENCE_CATALOG']
+        for entry in selected:
+            self.assertEqual(resolve_evidence_id(entry['evidence_id'], catalog, self.evidence), entry)
+        fundamental = select_fundamental_evidence(self.evidence)['EVIDENCE_CATALOG']
+        common = [e for e in selected if e in fundamental]
+        self.assertTrue(any(e['path'].endswith('free_cash_flow_growth') for e in common))
+        self.assertEqual(selected, [e for e in catalog if e in selected])
+
+    def test_unrelated_and_no_scores(self):
+        paths = [e['path'] for e in self.selected()['EVIDENCE_CATALOG']]
+        for word in ('news', 'transcript', 'pe_ratio', 'portfolio', 'risk_score'):
+            self.assertFalse(any(word in path for path in paths))
+        self.assertNotIn('recommendation', self.selected())
+
+    def test_no_calculation_or_missing_substitution(self):
+        self.evidence['calculated_metrics']['cash_flow_metrics']['free_cash_flow'] = 987
+        self.evidence['calculated_metrics']['cash_flow_metrics']['free_cash_flow_growth'] = None
+        del self.evidence['calculated_metrics']['balance_sheet_metrics']['cash_to_debt']
+        values = {e['path']: e['value'] for e in self.selected()['EVIDENCE_CATALOG']}
+        self.assertEqual(values['calculated_metrics.cash_flow_metrics.free_cash_flow'], 987)
+        self.assertNotIn('calculated_metrics.cash_flow_metrics.free_cash_flow_growth', values)
+        self.assertNotIn('calculated_metrics.balance_sheet_metrics.cash_to_debt', values)
+        self.assertEqual(self.selected()['missing_data'], self.evidence['missing_data'])
+
+    def test_deterministic_independent_view(self):
+        from copy import deepcopy
+        before = deepcopy(self.evidence)
+        a, b = self.selected(), self.selected()
+        self.assertEqual(a, b)
+        a['EVIDENCE_CATALOG'][0]['value'] = 'changed'
+        a['missing_data'].append('changed')
+        self.assertEqual(before, self.evidence)
+        self.assertEqual(b, self.selected())
+
+    def test_context_defaults_and_ticker(self):
+        from src.specialists import build_risk_context
+        self.evidence['ticker'] = ' test '
+        context = build_risk_context(self.evidence)
+        self.assertIsInstance(context, SpecialistContext)
+        self.assertEqual((context.ticker, context.specialist_name), ('TEST', 'risk'))
+        self.assertIsNone(context.portfolio_context)
+        self.assertIsNone(context.decision_memory)
+
+    def test_portfolio_policy_and_memory_stay_separate(self):
+        from copy import deepcopy
+        from src.specialists import build_risk_context
+        from src.models import PortfolioPositionInput, DecisionMemoryItem
+        snapshot = build_portfolio_snapshot(PortfolioInput([PortfolioPositionInput('TEST', 10, 5)], 0), {})
+        portfolio = build_portfolio_analysis_context(snapshot, assess_portfolio_risk(snapshot), 'TEST')
+        memory = DecisionMemoryContext('TEST', [DecisionMemoryItem(
+            'old', 'TEST', '2020-01-01', 'Hold', 50, None, 'Historical cash-to-debt was 3',
+            [], [], [], [], [])])
+        self.evidence['calculated_metrics']['balance_sheet_metrics']['cash_to_debt'] = None
+        before = deepcopy((self.evidence, portfolio, memory))
+        context = build_risk_context(self.evidence, portfolio, memory)
+        self.assertIs(context.portfolio_context, portfolio)
+        self.assertIs(context.decision_memory, memory)
+        self.assertFalse(context.portfolio_context.portfolio_risk_assessment.concentration_policy_evaluable)
+        self.assertEqual(context.research_evidence, self.selected())
+        self.assertFalse(any(e['path'].endswith('cash_to_debt') for e in context.research_evidence['EVIDENCE_CATALOG']))
+        self.assertEqual(before, (self.evidence, portfolio, memory))

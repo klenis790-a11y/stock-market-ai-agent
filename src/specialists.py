@@ -53,14 +53,20 @@ def select_fundamental_evidence(evidence: dict) -> dict:
     (including broader package limitations); absent/None leaves get no new IDs.
     No calculations, interpretations, or historical substitutions occur here.
     """
+    return _select_evidence(evidence, _FUNDAMENTAL_FIELDS)
+
+
+def _select_evidence(evidence: dict, fields_by_path: dict) -> dict:
+    """Filter canonical entries without changing identity, values or ordering."""
     selected = []
     for entry in build_evidence_catalog(evidence):
         parts = entry['path'].split('.')
         prefix = '.'.join(parts[:2])
-        fields = _FUNDAMENTAL_FIELDS.get(prefix, set())
+        fields = fields_by_path.get(prefix, set())
         indexed = prefix in {
             'retrieved_facts.income_statements',
             'retrieved_facts.balance_sheets', 'retrieved_facts.cash_flows',
+            'retrieved_facts.earnings',
         }
         expected_length = 4 if indexed else 3
         if (len(parts) == expected_length and parts[-1] in fields
@@ -83,5 +89,55 @@ def build_fundamental_context(
     return SpecialistContext(
         ticker=evidence['ticker'], specialist_name='fundamental',
         research_evidence=select_fundamental_evidence(evidence),
+        portfolio_context=portfolio_context, decision_memory=decision_memory,
+    )
+
+
+# Risk shares financial facts with Fundamental, retaining the same original IDs.
+# Dates and raw metric inputs preserve context, not additional risk calculations.
+_RISK_FIELDS = {
+    'retrieved_facts.stock': {
+        'ticker', 'company_name', 'data_source', 'data_timestamp', 'free_cash_flow',
+    },
+    'retrieved_facts.balance_sheets': set(_FUNDAMENTAL_FIELDS['retrieved_facts.balance_sheets']),
+    'retrieved_facts.cash_flows': set(_FUNDAMENTAL_FIELDS['retrieved_facts.cash_flows']),
+    'retrieved_facts.income_statements': {
+        'fiscal_date_ending', 'total_revenue', 'net_income',
+    },
+    'retrieved_facts.earnings': {
+        'fiscal_date_ending', 'reported_date', 'reported_eps', 'estimated_eps',
+        'surprise', 'surprise_percentage',
+    },
+    'calculated_metrics.balance_sheet_metrics': {
+        'debt_to_equity', 'liabilities_to_assets', 'cash_to_debt',
+    },
+    'calculated_metrics.cash_flow_metrics': {'free_cash_flow', 'free_cash_flow_growth'},
+    'calculated_metrics.income_statement_metrics': {'revenue_growth', 'net_income_growth'},
+    'calculated_metrics.earnings_metrics': {
+        'latest_surprise_percentage', 'average_surprise_percentage',
+        'beats_last_4_quarters', 'misses_last_4_quarters',
+    },
+}
+
+
+def select_risk_evidence(evidence: dict) -> dict:
+    """Current company evidence only, using the existing selected-catalog convention.
+
+    Preserve original IDs/path/value and missing_data verbatim. Missing values are
+    not fabricated or replaced; no risk scores or policy judgments are calculated.
+    Portfolio policy and historical memory are never added to this evidence view.
+    """
+    return _select_evidence(evidence, _RISK_FIELDS)
+
+
+def build_risk_context(
+    evidence: dict,
+    portfolio_context: PortfolioAnalysisContext | None = None,
+    decision_memory: DecisionMemoryContext | None = None,
+) -> SpecialistContext:
+    """Attach portfolio policy and historical memory separately, without adapting either."""
+    return SpecialistContext(
+        ticker=evidence['ticker'], specialist_name='risk',
+        research_evidence=select_risk_evidence(evidence),
         portfolio_context=portfolio_context, decision_memory=decision_memory,
     )
