@@ -1,4 +1,4 @@
-"""Decision history contracts only; no persistence, credentials, or providers."""
+"""Decision contracts and temporary SQLite tests; no credentials or providers."""
 import unittest
 from dataclasses import fields
 
@@ -179,6 +179,98 @@ class DecisionBuilderTests(unittest.TestCase):
                          ['analysis', 'decision_timestamp', 'investment_horizon', 'decision_id'])
         with self.assertRaises(TypeError):
             self.build(self.analysis, 'timestamp', stock_end_price=100)
+
+
+class DecisionStoreTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from src.decision_store import DecisionStore
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = str(Path(self.temp.name) / 'decisions.sqlite')
+        self.store = DecisionStore(self.path)
+        self.store.initialize()
+
+    def test_initialization_idempotent_and_boundary(self):
+        import sqlite3
+        from contextlib import closing
+        self.store.initialize()
+        with closing(sqlite3.connect(self.path)) as connection:
+            tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+            self.assertEqual(tables, [('decisions',)])
+            columns = connection.execute('PRAGMA table_info(decisions)').fetchall()
+            self.assertEqual({c[1] for c in columns}, {f.name for f in fields(DecisionRecord)})
+            self.assertEqual(next(c for c in columns if c[1] == 'decision_id')[5], 1)
+
+    def test_complete_round_trip_and_types(self):
+        original = record(missing_data=['Unavailable'], investment_horizon='12 months',
+                          portfolio_assessment='Context')
+        original.bear_case = [InterpretationStatement('Bear', ['E002'])]
+        original.supporting_evidence = [InterpretationStatement('Support', ['E003'])]
+        original.major_risks = [InterpretationStatement('Risk', ['E004'])]
+        original.thesis_invalidation_conditions = [ForecastStatement('Condition', ['E005'])]
+        self.store.save_decision(original)
+        loaded = self.store.get_decision(original.decision_id)
+        self.assertEqual(loaded, original)
+        for name in ('bull_case', 'bear_case', 'supporting_evidence', 'major_risks'):
+            self.assertIsInstance(getattr(loaded, name)[0], InterpretationStatement)
+        for name in ('scenarios', 'thesis_invalidation_conditions'):
+            self.assertIsInstance(getattr(loaded, name)[0], ForecastStatement)
+        self.assertIsInstance(loaded.material_evidence_review['E001'], MaterialEvidenceReview)
+
+    def test_optional_none_and_durability(self):
+        from src.decision_store import DecisionStore
+        self.store.save_decision(record())
+        loaded = DecisionStore(self.path).get_decision('fixture-1')
+        self.assertIsNone(loaded.portfolio_assessment)
+        self.assertIsNone(loaded.investment_horizon)
+        self.assertEqual(loaded, record())
+
+    def test_duplicate_rejected_without_overwrite(self):
+        import sqlite3
+        self.store.save_decision(record())
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.save_decision(record(reasoning_summary='Replacement'))
+        self.assertEqual(self.store.get_decision('fixture-1'), record())
+        self.store.save_decision(record(decision_id='second'))
+        self.assertEqual(len(self.store.get_decisions_for_ticker('TEST')), 2)
+
+    def test_missing(self):
+        self.assertIsNone(self.store.get_decision('absent'))
+        self.assertEqual(self.store.get_decisions_for_ticker('NONE'), [])
+
+    def test_history_order_filter_normalization(self):
+        for ident, ticker, timestamp in [('old', 'TEST', '2026-01-01'),
+                                          ('other', 'OTHER', '2026-03-01'),
+                                          ('new', 'TEST', '2026-02-01')]:
+            self.store.save_decision(record(decision_id=ident, ticker=ticker, decision_timestamp=timestamp))
+        self.assertEqual([r.decision_id for r in self.store.get_decisions_for_ticker(' test ')], ['new', 'old'])
+
+    def test_special_characters_safe(self):
+        original = record(decision_id="x'; DROP TABLE decisions; --", reasoning_summary="Quote ' 雪\nNewline",
+                          ticker="O'X", missing_data=['\\quoted"'])
+        self.store.save_decision(original)
+        self.assertEqual(self.store.get_decision(original.decision_id), original)
+        self.assertEqual(self.store.get_decisions_for_ticker("o'x"), [original])
+        self.assertEqual(self.store.get_decisions_for_ticker("' OR 1=1 --"), [])
+
+    def test_no_mutation_and_independent_reads(self):
+        from copy import deepcopy
+        original = record()
+        before = deepcopy(original)
+        self.store.save_decision(original)
+        self.assertEqual(original, before)
+        loaded = self.store.get_decision(original.decision_id)
+        loaded.bull_case[0].evidence_refs.append('E999')
+        self.assertEqual(self.store.get_decision(original.decision_id), before)
+
+    def test_deterministic_json(self):
+        from src.decision_store import _serialize
+        first = record(material_evidence_review={'E002': MaterialEvidenceReview('Two', 'R'),
+                                                'E001': MaterialEvidenceReview('One', 'R')})
+        second = record(material_evidence_review=dict(reversed(list(first.material_evidence_review.items()))))
+        self.assertEqual(_serialize(first), _serialize(second))
 
 
 if __name__ == '__main__':
