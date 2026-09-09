@@ -682,3 +682,114 @@ class OrchestrationTests(unittest.TestCase):
         builder.assert_called_once()
         analyzer.assert_called_once()
         self.assertNotIn('hypothetical', ACTIVE_SPECIALISTS)
+
+
+class SynthesisTests(unittest.TestCase):
+    def setUp(self):
+        import json
+        from unittest.mock import patch
+        from test_v01 import evidence, payload
+        self.evidence = evidence()
+        self.data = payload(self.evidence)
+        self.context = MultiAgentSynthesisContext('TEST', [result(), result(specialist_name='risk')])
+        for patcher in (patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')),
+                        patch.dict('os.environ', {}, clear=True),
+                        patch('src.analysis.analyze_investment', side_effect=AssertionError('No fallback')),
+                        patch('src.multi_agent.run_specialists', side_effect=AssertionError('No reruns'))):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        patcher = patch('src.synthesis.request_text', return_value=json.dumps(self.data))
+        self.mock = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_synthesis(self):
+        from src.synthesis import synthesize_investment_analysis
+        return synthesize_investment_analysis(self.context, self.evidence)
+
+    def respond(self, data):
+        import json
+        self.mock.return_value = json.dumps(data)
+        return self.run_synthesis()
+
+    def test_existing_output(self):
+        item = self.run_synthesis()
+        self.assertIsInstance(item, InvestmentAnalysis)
+        self.assertIsInstance(item.bull_case[0], InterpretationStatement)
+        self.assertIsInstance(item.scenarios[0], ForecastStatement)
+        self.mock.assert_called_once()
+        self.assertEqual(item.missing_data, self.evidence['missing_data'])
+
+    def test_variable_count_order(self):
+        import json
+        for names in (['fundamental'], ['fundamental', 'risk'], ['risk', 'fundamental'], ['hypothetical', 'risk', 'fundamental']):
+            self.context.specialist_results = [result(specialist_name=n) for n in names]
+            self.run_synthesis()
+            payload = json.loads(self.mock.call_args.kwargs['input'])
+            self.assertEqual([x['specialist_name'] for x in payload['SPECIALIST_INTERPRETATIONS']], names)
+            self.assertEqual(payload['evidence_package'], self.evidence)
+
+    def test_recommendations(self):
+        for rec in ('Buy', 'Accumulate', 'Hold', 'Trim', 'Avoid'):
+            self.assertEqual(self.respond(dict(self.data, recommendation=rec)).recommendation, rec)
+        with self.assertRaises(ValueError): self.respond(dict(self.data, recommendation='Sell'))
+
+    def test_confidence(self):
+        for score in (0, 100):
+            self.assertEqual(self.respond(dict(self.data, confidence_score=score)).confidence_score, score)
+        for score in (-1, 101, True, None):
+            with self.assertRaises(ValueError): self.respond(dict(self.data, confidence_score=score))
+
+    def test_current_ids_only(self):
+        self.context.specialist_results[0].key_findings[0].evidence_refs = ['E999']
+        self.data['bull_case'][0]['evidence_refs'] = ['E999']
+        with self.assertRaises(ValueError): self.respond(self.data)
+
+    def test_material_coverage_not_satisfied_by_advice(self):
+        self.data['material_evidence_review'] = {}
+        with self.assertRaises(ValueError): self.respond(self.data)
+
+    def test_separate_optional_contexts(self):
+        import copy
+        import json
+        from src.analysis import INSTRUCTIONS, PORTFOLIO_INSTRUCTIONS, MEMORY_INSTRUCTIONS
+        snapshot = build_portfolio_snapshot(PortfolioInput([], 100), {})
+        self.context.portfolio_context = build_portfolio_analysis_context(snapshot, assess_portfolio_risk(snapshot), 'TEST')
+        self.context.decision_memory = DecisionMemoryContext('TEST', [])
+        before = copy.deepcopy((self.context, self.evidence))
+        self.data['portfolio_assessment'] = 'Supplied portfolio context.'
+        self.respond(self.data)
+        args = self.mock.call_args.kwargs
+        payload = json.loads(args['input'])
+        self.assertEqual(payload['evidence_package'], self.evidence)
+        self.assertIn('PORTFOLIO_CONTEXT', payload)
+        self.assertIn('HISTORICAL_DECISION_MEMORY', payload)
+        for instructions in (INSTRUCTIONS, PORTFOLIO_INSTRUCTIONS, MEMORY_INSTRUCTIONS):
+            self.assertIn(instructions, args['instructions'])
+        self.assertEqual(before, (self.context, self.evidence))
+
+    def test_advisory_and_temporal_instructions(self):
+        from src.analysis import INSTRUCTIONS
+        self.run_synthesis()
+        instructions = self.mock.call_args.kwargs['instructions']
+        self.assertIn(INSTRUCTIONS, instructions)
+        for phrase in ('Portfolio Manager / Final Synthesis Analyst', 'is authoritative',
+                       'not retrieved facts', 'Do not use voting', 'Do not average specialist',
+                       'Preserve material', 'disagreement', 'fill missing current evidence',
+                       'valuation/earnings specialists exist unless supplied', 'temporal'):
+            self.assertIn(phrase, instructions)
+
+    def test_malformed_and_failure(self):
+        self.mock.return_value = 'invalid'
+        with self.assertRaisesRegex(ValueError, 'invalid synthesis JSON'): self.run_synthesis()
+        self.mock.reset_mock()
+        self.mock.side_effect = RuntimeError('OpenAI failed')
+        with self.assertRaises(RuntimeError): self.run_synthesis()
+        self.mock.assert_called_once()
+
+    def test_identity_and_schema_rejection(self):
+        with self.assertRaises(ValueError): self.respond(dict(self.data, ticker='OTHER'))
+        with self.assertRaises(ValueError): self.respond(dict(self.data, specialist_votes=[]))
+        self.context.ticker = 'OTHER'
+        self.mock.reset_mock()
+        with self.assertRaises(ValueError): self.run_synthesis()
+        self.mock.assert_not_called()
