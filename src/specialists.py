@@ -1,12 +1,9 @@
-"""Implementation-phase activation policy only; no specialist execution exists yet.
+"""Evidence preparation and ordered implementation-phase specialist registration.
 
 Fundamental will focus on company fundamentals, not portfolio allocation.
 Risk may interpret company risk and optional deterministic portfolio policy.
 Future activation changes do not require changing shared data contracts.
 """
-
-ACTIVE_SPECIALISTS = ("fundamental", "risk")
-
 
 from copy import deepcopy
 
@@ -141,3 +138,13 @@ def build_risk_context(
         research_evidence=select_risk_evidence(evidence),
         portfolio_context=portfolio_context, decision_memory=decision_memory,
     )
+
+
+# One ordered activation boundary; shared models do not restrict specialist names.
+from src.fundamental_analysis import analyze_fundamental_specialist
+from src.risk_analysis import analyze_risk_specialist
+
+ACTIVE_SPECIALISTS = {
+    'fundamental': (build_fundamental_context, analyze_fundamental_specialist),
+    'risk': (build_risk_context, analyze_risk_specialist),
+}

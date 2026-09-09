@@ -82,7 +82,7 @@ class SpecialistContractTests(unittest.TestCase):
             self.assertEqual(SpecialistContext('TEST', name, {}).specialist_name, name)
 
     def test_activation_separate(self):
-        self.assertEqual(ACTIVE_SPECIALISTS, ('fundamental', 'risk'))
+        self.assertEqual(tuple(ACTIVE_SPECIALISTS), ('fundamental', 'risk'))
         self.assertNotIn('hypothetical', ACTIVE_SPECIALISTS)
 
     def test_shared_fields(self):
@@ -573,3 +573,112 @@ class RiskAITests(unittest.TestCase):
         self.mock.side_effect = RuntimeError('OpenAI request failed.')
         with self.assertRaises(RuntimeError): self.run_analysis()
         self.mock.assert_called_once()
+
+
+class OrchestrationTests(unittest.TestCase):
+    def setUp(self):
+        from unittest.mock import Mock, patch
+        from src.specialists import ACTIVE_SPECIALISTS
+        self.events = []
+        self.evidence = {'ticker': 'TEST', 'retrieved_facts': {
+            'stock': {'revenue': 100, 'free_cash_flow': 5},
+            'earnings': [{'surprise_percentage': 3}]}, 'calculated_metrics': {}, 'missing_data': []}
+        self.registry = {}
+        for name, (builder, analyzer) in ACTIVE_SPECIALISTS.items():
+            def analyze(context, name=name):
+                self.events.append(name)
+                return result(specialist_name=name)
+            self.registry[name] = (Mock(wraps=builder), Mock(side_effect=analyze))
+        patcher = patch.dict(ACTIVE_SPECIALISTS, self.registry, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        for target in ('socket.socket.connect', 'src.analysis.analyze_investment'):
+            guard = patch(target, side_effect=AssertionError('Unexpected call'))
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def run_specialists(self, names=None, **kwargs):
+        from src.multi_agent import run_specialists
+        return run_specialists(' test ', self.evidence, specialist_names=names, **kwargs)
+
+    def test_default_order_counts_types(self):
+        context = self.run_specialists()
+        self.assertIsInstance(context, MultiAgentSynthesisContext)
+        self.assertEqual(self.events, ['fundamental', 'risk'])
+        self.assertEqual([r.specialist_name for r in context.specialist_results], self.events)
+        for builder, analyzer in self.registry.values():
+            builder.assert_called_once()
+            analyzer.assert_called_once()
+        self.assertTrue(all(isinstance(r, SpecialistAnalysis) for r in context.specialist_results))
+        self.assertFalse(hasattr(context, 'recommendation'))
+
+    def test_subsets_and_order(self):
+        for names in (['fundamental'], ['risk'], ['risk', 'fundamental'], []):
+            self.events.clear()
+            context = self.run_specialists(names)
+            self.assertEqual(self.events, names)
+            self.assertEqual([r.specialist_name for r in context.specialist_results], names)
+
+    def test_invalid_selection_preflight(self):
+        for names in (['unknown'], ['risk', 'risk'], ['fundamental', 'unknown'], 'risk'):
+            with self.assertRaises(ValueError): self.run_specialists(names)
+        for builder, analyzer in self.registry.values():
+            builder.assert_not_called()
+            analyzer.assert_not_called()
+
+    def test_selected_contexts_and_input_isolation(self):
+        from copy import deepcopy
+        from src.specialists import select_fundamental_evidence, select_risk_evidence
+        snapshot = build_portfolio_snapshot(PortfolioInput([], 100), {})
+        portfolio = build_portfolio_analysis_context(snapshot, assess_portfolio_risk(snapshot), 'TEST')
+        memory = DecisionMemoryContext('TEST', [])
+        before = deepcopy((self.evidence, portfolio, memory))
+        self.run_specialists(portfolio_context=portfolio, decision_memory=memory)
+        contexts = [self.registry[n][1].call_args.args[0] for n in ('fundamental', 'risk')]
+        self.assertIsNot(contexts[0], contexts[1])
+        for c, selector in zip(contexts, (select_fundamental_evidence, select_risk_evidence)):
+            self.assertEqual(c.research_evidence, selector(self.evidence))
+            self.assertEqual(c.portfolio_context, portfolio)
+            self.assertEqual(c.decision_memory, memory)
+        contexts[0].portfolio_context.cash_weight = 0
+        contexts[0].research_evidence['missing_data'].append('changed')
+        self.assertEqual(before, (self.evidence, portfolio, memory))
+        self.assertEqual(contexts[1].research_evidence['missing_data'], [])
+
+    def test_first_failure_stops(self):
+        self.registry['fundamental'][1].side_effect = RuntimeError('failed')
+        with self.assertRaises(RuntimeError): self.run_specialists()
+        self.registry['fundamental'][1].assert_called_once()
+        self.registry['risk'][0].assert_not_called()
+        self.registry['risk'][1].assert_not_called()
+
+    def test_second_failure_no_partial(self):
+        self.registry['risk'][1].side_effect = ValueError('invalid response')
+        with self.assertRaises(ValueError): self.run_specialists()
+        for _, analyzer in self.registry.values(): analyzer.assert_called_once()
+
+    def test_builder_failure(self):
+        self.registry['fundamental'][0].side_effect = ValueError('context failure')
+        with self.assertRaises(ValueError): self.run_specialists()
+        for _, analyzer in self.registry.values(): analyzer.assert_not_called()
+
+    def test_invalid_result(self):
+        bad_score = result()
+        bad_score.confidence_score = 101
+        for value in (None, result(specialist_name='risk'), result(ticker='OTHER'), bad_score):
+            self.registry['fundamental'][1].side_effect = None
+            self.registry['fundamental'][1].return_value = value
+            with self.assertRaises(ValueError): self.run_specialists()
+        self.registry['risk'][1].assert_not_called()
+
+    def test_generic_registration(self):
+        from unittest.mock import Mock, patch
+        from src.specialists import ACTIVE_SPECIALISTS
+        builder = Mock(return_value=SpecialistContext('TEST', 'hypothetical', {}))
+        analyzer = Mock(return_value=result(specialist_name='hypothetical'))
+        with patch.dict(ACTIVE_SPECIALISTS, {'hypothetical': (builder, analyzer)}):
+            context = self.run_specialists(['hypothetical'])
+        self.assertEqual(context.specialist_results[0].specialist_name, 'hypothetical')
+        builder.assert_called_once()
+        analyzer.assert_called_once()
+        self.assertNotIn('hypothetical', ACTIVE_SPECIALISTS)
