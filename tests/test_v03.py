@@ -798,5 +798,121 @@ class OptionalMemoryAnalysisTests(unittest.TestCase):
         request.assert_not_called()
 
 
+class AutomaticMemoryTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from src import analysis, research_pipeline, portfolio_research_pipeline
+        from src.decision_store import DecisionStore
+        from test_v01 import evidence, payload
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.store = DecisionStore(str(Path(temp.name) / 'memory.sqlite'))
+        self.store.initialize()
+        self.modules = (research_pipeline, portfolio_research_pipeline)
+        self.evidence = evidence()
+        self.result = analysis._validate_analysis(payload(self.evidence), self.evidence)
+        blocker = patch('socket.socket.connect', side_effect=AssertionError('Network forbidden'))
+        blocker.start()
+        self.addCleanup(blocker.stop)
+
+    def invoke(self, module, **kwargs):
+        from src.models import PortfolioInput
+        if module is self.modules[0]:
+            return module.run_stock_research(' test ', **kwargs)
+        return module.run_portfolio_aware_research(' test ', PortfolioInput([], 100), **kwargs)
+
+    def test_disabled_unchanged(self):
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', return_value=self.evidence), patch.object(
+                module, 'analyze_investment', return_value=self.result
+            ) as analyze, patch.object(self.store, 'get_decisions_for_ticker') as query:
+                self.invoke(module, decision_store=self.store, persist_decision=False)
+                self.assertEqual(analyze.call_args.kwargs, {})
+                query.assert_not_called()
+
+    def test_read_only_default_custom_and_empty(self):
+        from unittest.mock import patch
+        from src.decision_memory import build_decision_memory_context
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', return_value=self.evidence), patch.object(
+                module, 'analyze_investment', return_value=self.result
+            ) as analyze:
+                self.invoke(module, decision_store=self.store, use_decision_memory=True, persist_decision=False)
+                self.assertEqual(analyze.call_args.kwargs['memory_context'].prior_decisions, [])
+        for i in range(6):
+            self.store.save_decision(record(decision_id=str(i), decision_timestamp=f'2026-01-0{i+1}'))
+        for module in self.modules:
+            for options, count in [({}, 5), ({'memory_limit': 2}, 2), ({'memory_limit': 0}, 0)]:
+                with patch.object(module, 'build_stock_evidence', return_value=self.evidence), patch.object(
+                    module, 'analyze_investment', return_value=self.result
+                ) as analyze, patch.object(module, 'build_decision_memory_context', wraps=build_decision_memory_context) as retrieve:
+                    self.invoke(module, decision_store=self.store, use_decision_memory=True,
+                                persist_decision=False, **options)
+                    retrieve.assert_called_once_with(self.store, 'TEST', options.get('memory_limit', 5))
+                    self.assertEqual(len(analyze.call_args.kwargs['memory_context'].prior_decisions), count)
+        self.assertEqual(len(self.store.get_decisions_for_ticker('TEST')), 6)
+
+    def test_order_and_self_memory_prevention(self):
+        from unittest.mock import patch
+        from src.decision_memory import build_decision_memory_context
+        for module in self.modules:
+            events = []
+            prior = len(self.store.get_decisions_for_ticker('TEST'))
+            def evidence(ticker):
+                events.append('evidence')
+                return self.evidence
+            def memory(*args):
+                events.append('memory')
+                return build_decision_memory_context(*args)
+            def analyze(*args, **kwargs):
+                events.append('analysis')
+                self.assertEqual(len(kwargs['memory_context'].prior_decisions), prior)
+                return self.result
+            original_save = self.store.save_decision
+            def save(record):
+                events.append('save')
+                original_save(record)
+            with patch.object(module, 'build_stock_evidence', side_effect=evidence), patch.object(
+                module, 'build_decision_memory_context', side_effect=memory
+            ), patch.object(module, 'analyze_investment', side_effect=analyze), patch.object(self.store, 'save_decision', side_effect=save):
+                self.invoke(module, decision_store=self.store, use_decision_memory=True, decision_timestamp='2026-03-01')
+            self.assertEqual(events, ['evidence', 'memory', 'analysis', 'save'])
+            self.assertEqual(len(self.store.get_decisions_for_ticker('TEST')), prior + 1)
+
+    def test_configuration_failures(self):
+        from unittest.mock import patch
+        for module in self.modules:
+            for kwargs in ({'use_decision_memory': True}, {'memory_limit': -1}):
+                with patch.object(module, 'analyze_investment') as analyze, self.assertRaises(ValueError):
+                    self.invoke(module, **kwargs)
+                analyze.assert_not_called()
+
+    def test_retrieval_failure_no_analysis_or_save(self):
+        import sqlite3
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', return_value=self.evidence) as evidence, patch.object(
+                self.store, 'get_decisions_for_ticker', side_effect=sqlite3.DatabaseError('Unreadable')
+            ), patch.object(module, 'analyze_investment') as analyze, patch.object(self.store, 'save_decision') as save:
+                with self.assertRaises(sqlite3.DatabaseError):
+                    self.invoke(module, decision_store=self.store, use_decision_memory=True, decision_timestamp='date')
+                evidence.assert_called_once()
+                analyze.assert_not_called()
+                save.assert_not_called()
+
+    def test_persistence_without_memory(self):
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', return_value=self.evidence), patch.object(
+                module, 'analyze_investment', return_value=self.result
+            ), patch.object(module, 'build_decision_memory_context') as retrieve, patch.object(self.store, 'save_decision') as save:
+                self.invoke(module, decision_store=self.store, decision_timestamp='date')
+                retrieve.assert_not_called()
+                save.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

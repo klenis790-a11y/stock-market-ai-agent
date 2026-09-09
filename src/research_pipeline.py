@@ -1,3 +1,4 @@
+from src.decision_memory import build_decision_memory_context
 from src.decision_history import save_analysis_decision
 from src.decision_store import DecisionStore
 from dataclasses import replace
@@ -66,13 +67,25 @@ def run_stock_research(
     ticker: str, *, decision_store: DecisionStore | None = None,
     decision_timestamp: str | None = None, investment_horizon: str | None = None,
     memory_context: DecisionMemoryContext | None = None,
+    use_decision_memory: bool = False, memory_limit: int = 5,
+    persist_decision: bool = True,
 ) -> InvestmentAnalysis:
-    if decision_store is not None and (
+    # Preserve legacy store-implies-save behavior; False permits read-only use.
+    if type(memory_limit) is not int or memory_limit < 0:
+        raise ValueError("memory_limit must be a non-negative integer.")
+    if use_decision_memory and decision_store is None:
+        raise ValueError("decision_store is required for automatic memory retrieval.")
+    if use_decision_memory and memory_context is not None:
+        raise ValueError("Supply explicit memory or enable retrieval, not both.")
+    if persist_decision and decision_store is not None and (
         not isinstance(decision_timestamp, str) or not decision_timestamp.strip()
     ):
         raise ValueError("decision_timestamp is required for decision persistence.")
-    result = analyze_investment(build_stock_evidence(ticker),
+    evidence = build_stock_evidence(ticker)
+    if use_decision_memory:
+        memory_context = build_decision_memory_context(decision_store, evidence["ticker"], memory_limit)
+    result = analyze_investment(evidence,
                                 **({"memory_context": memory_context} if memory_context is not None else {}))
-    if decision_store is not None:
+    if persist_decision and decision_store is not None:
         save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
     return result
