@@ -151,19 +151,55 @@ orders, portfolio persistence, optimization, backtesting, dashboards or price pr
 The offline suite covers input parsing, valuation, concentration, policy boundaries,
 quote reuse/degradation, CLI routing and mocked portfolio-aware analysis.
 
-## V0.3 decision history inspection
+## V0.3 — Decision History & Memory
 
-DecisionStore provides append-only SQLite storage for decisions and separately linked
-outcomes. Saving a validated analysis is opt-in through the Python pipeline API; the
-normal research CLI does not create a database or save decisions automatically.
-Inspect an existing database with:
+SQLite stores append-only `DecisionRecord` rows describing decision-time beliefs and
+separate `DecisionOutcome` rows for later observations. Duplicate decision IDs and
+outcome decision/horizon pairs are rejected; foreign keys prevent orphan outcomes.
+Outcome returns use supplied prices only, are decimal and unannualized, and remain
+unknown for missing prices or zero starting prices. No quality scoring is performed.
+
+Existing standalone and portfolio commands remain unchanged without history flags.
+Explicitly save a validated decision with:
+
+```sh
+.venv/bin/python src/main.py AAPL --db decisions.db --save-decision --horizon "12 months"
+```
+
+Save mode may initialize a database and uses a centralized UTC timestamp. Failed
+analysis is never saved. Inspect an existing database without writes or provider calls:
 
 ```sh
 .venv/bin/python -m src.main history AAPL --db decisions.db --limit 5
 ```
 
-`--db` is required and must point to an existing initialized database. Inspection opens
-it read-only and never retrieves market data or calls OpenAI. The default limit is five
-newest decisions; zero shows none. Outcome returns are decimal fractions. History is
-context only, distinct from current verified evidence, and does not influence AI
-recommendations. No evaluation judgments are produced.
+Opt into historical context for new research without saving another decision:
+
+```sh
+.venv/bin/python src/main.py AAPL --db decisions.db --use-memory --memory-limit 5
+```
+
+Memory requires an existing database. Add `--save-decision` to both read and save;
+retrieval precedes analysis and saving, preventing a decision from seeing itself.
+These options also work with `--portfolio`. `--memory-limit` requires `--use-memory`,
+defaults to five, and accepts zero but not negative values. `--horizon` requires saving.
+A database path alone enables neither reads nor writes. Memory-only access is read-only.
+
+Memory contains prior recommendations/confidence, reasoning, risks, scenarios,
+invalidation conditions, missing data and separate outcomes. It excludes full evidence
+catalogs, transcripts and material reviews; old evidence IDs are omitted from AI memory
+input to prevent collisions. Current verified evidence remains authoritative: memory
+cannot fill missing current facts or satisfy current material-review requirements.
+Historical claims must be attributed, and chronology must follow supplied source periods,
+not retrieval time. No automatic evaluation, adaptation, outcome scheduling, benchmark
+retrieval, embeddings or multi-agent functionality exists.
+
+Limitations: API callers must use consistent sortable timestamps (store ordering is
+lexical); timestamps and evaluation horizons are not semantically interpreted. No
+historical as-of cutoff is enforced for caller-supplied outcomes. Historical evidence IDs
+are stored without a full evidence archive and cannot independently reconstruct original
+provenance. SQLite files contain sensitive research/portfolio context in plaintext;
+keep them private and out of Git. Prompt boundaries and structural validation do not
+prove semantic correctness; human review remains necessary. The Step 10B live recheck
+validated with one prior decision, no additional saved decision, zero outcomes, and Hold
+at 62/100; this single run is not evidence of general investment accuracy.

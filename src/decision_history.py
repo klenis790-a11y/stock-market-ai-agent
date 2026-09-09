@@ -74,3 +74,10 @@ def save_analysis_decision(
     record = build_decision_record(analysis, decision_timestamp, investment_horizon, decision_id)
     store.save_decision(record)
     return record
+
+
+def utc_decision_timestamp() -> str:
+    """Central CLI decision timestamp convention: UTC with microsecond precision."""
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
