@@ -290,3 +290,82 @@ class PortfolioAnalysisContext:
     herfindahl_index: float | None
     effective_position_count: float | None
     portfolio_risk_assessment: PortfolioRiskAssessment
+
+
+@dataclass
+class DecisionRecord:
+    """Decision-time beliefs only; later observations belong in DecisionOutcome.
+
+    Evidence references retain their existing ID semantics. This model neither
+    persists evidence nor resolves IDs, computes outcomes, or generates timestamps.
+    """
+
+    decision_id: str
+    ticker: str
+    decision_timestamp: str
+    recommendation: str
+    confidence_score: float
+    investment_horizon: str | None
+    reasoning_summary: str
+    fundamental_assessment: str
+    valuation_assessment: str
+    earnings_assessment: str
+    portfolio_assessment: str | None
+    bull_case: list[InterpretationStatement]
+    bear_case: list[InterpretationStatement]
+    supporting_evidence: list[InterpretationStatement]
+    major_risks: list[InterpretationStatement]
+    thesis_invalidation_conditions: list[ForecastStatement]
+    scenarios: list[ForecastStatement]
+    missing_data: list[str]
+    material_evidence_review: dict[str, MaterialEvidenceReview]
+
+    def __post_init__(self):
+        from math import isfinite
+
+        for name in ('decision_id', 'ticker', 'decision_timestamp'):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be non-empty.")
+        self.ticker = self.ticker.strip().upper()
+        if self.recommendation not in ('Buy', 'Accumulate', 'Hold', 'Trim', 'Avoid'):
+            raise ValueError("Decision recommendation is invalid.")
+        score = self.confidence_score
+        if type(score) not in (int, float) or not isfinite(score) or not 0 <= score <= 100:
+            raise ValueError("Decision confidence_score must be between 0 and 100.")
+
+
+@dataclass
+class DecisionOutcome:
+    """Later observations linked by decision_id; returns are supplied, not computed.
+
+    Kept separate to avoid contaminating decision-time beliefs with future data.
+    No chronological inference or performance evaluation happens on construction.
+    """
+
+    decision_id: str
+    evaluation_timestamp: str
+    evaluation_horizon: str
+    stock_start_price: float | None
+    stock_end_price: float | None
+    stock_return: float | None
+    benchmark_ticker: str | None
+    benchmark_start_price: float | None
+    benchmark_end_price: float | None
+    benchmark_return: float | None
+    excess_return: float | None
+
+    def __post_init__(self):
+        from math import isfinite
+
+        for name in ('decision_id', 'evaluation_timestamp', 'evaluation_horizon'):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"{name} must be non-empty.")
+        for name in ('stock_start_price', 'stock_end_price',
+                     'benchmark_start_price', 'benchmark_end_price'):
+            value = getattr(self, name)
+            if value is not None and (
+                type(value) not in (int, float) or not isfinite(value) or value < 0
+            ):
+                raise ValueError(f"{name} must be a finite non-negative number or None.")
