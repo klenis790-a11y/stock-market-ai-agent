@@ -487,5 +487,108 @@ class PersistenceIntegrationTests(unittest.TestCase):
                 retrieve.assert_not_called()
 
 
+class DecisionMemoryTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from src.decision_store import DecisionStore
+        from src.decision_memory import build_decision_memory_context
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.store = DecisionStore(str(Path(temporary.name) / 'memory.sqlite'))
+        self.store.initialize()
+        self.build = build_decision_memory_context
+        blocker = patch('socket.socket.connect', side_effect=AssertionError('Network forbidden'))
+        blocker.start()
+        self.addCleanup(blocker.stop)
+
+    def test_empty_context(self):
+        result = self.build(self.store, ' test ')
+        self.assertEqual(result.ticker, 'TEST')
+        self.assertEqual(result.prior_decisions, [])
+
+    def test_one_record_preserves_compact_fields(self):
+        original = record(major_risks=[InterpretationStatement('Risk', ['E001'])],
+                          thesis_invalidation_conditions=[ForecastStatement('Condition', ['E001'])],
+                          missing_data=['Missing'], investment_horizon='1 year')
+        self.store.save_decision(original)
+        item = self.build(self.store, 'TEST').prior_decisions[0]
+        for field in fields(item):
+            if field.name != 'outcomes':
+                self.assertEqual(getattr(item, field.name), getattr(original, field.name))
+        self.assertEqual(item.outcomes, [])
+
+    def test_recency_default_custom_limit_and_filter(self):
+        for i in range(7):
+            self.store.save_decision(record(decision_id=str(i), decision_timestamp=f'2026-01-0{i+1}'))
+        self.store.save_decision(record(decision_id='other', ticker='OTHER', decision_timestamp='2027-01-01'))
+        self.assertEqual([x.decision_id for x in self.build(self.store, ' test ').prior_decisions],
+                         ['6', '5', '4', '3', '2'])
+        self.assertEqual([x.decision_id for x in self.build(self.store, 'TEST', 2).prior_decisions], ['6', '5'])
+        self.assertEqual(len(self.build(self.store, 'TEST', 100).prior_decisions), 7)
+
+    def test_zero_limit_no_queries(self):
+        from unittest.mock import patch
+        with patch.object(self.store, 'get_decisions_for_ticker') as query:
+            self.assertEqual(self.build(self.store, 'TEST', 0).prior_decisions, [])
+            query.assert_not_called()
+
+    def test_invalid_arguments(self):
+        for limit in (-1, 1.5, True, '5'):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                self.build(self.store, 'TEST', limit)
+        for ticker in ('', ' ', None):
+            with self.assertRaises(ValueError):
+                self.build(self.store, ticker)
+
+    def test_outcomes_attached_and_ordered(self):
+        self.store.save_decision(record())
+        self.store.save_decision(record(decision_id='new', decision_timestamp='2026-02-01'))
+        self.store.save_decision(record(decision_id='other', ticker='OTHER'))
+        for horizon, timestamp in [('90 days', '2026-04-01'), ('30 days', '2026-02-01')]:
+            self.store.save_outcome(outcome(evaluation_horizon=horizon, evaluation_timestamp=timestamp))
+        self.store.save_outcome(outcome(decision_id='other'))
+        items = self.build(self.store, 'TEST').prior_decisions
+        self.assertEqual(items[0].decision_id, 'new')
+        self.assertEqual(items[0].outcomes, [])
+        self.assertEqual([o.evaluation_horizon for o in items[1].outcomes], ['30 days', '90 days'])
+        self.assertTrue(all(o.decision_id == 'fixture-1' for o in items[1].outcomes))
+
+    def test_copy_isolation_from_loaded_objects_and_database(self):
+        from copy import deepcopy
+        from unittest.mock import patch
+        self.store.save_decision(record(major_risks=[InterpretationStatement('Risk', ['E001'])]))
+        self.store.save_outcome(outcome())
+        loaded = self.store.get_decisions_for_ticker('TEST')
+        outcomes = self.store.get_outcomes_for_decision('fixture-1')
+        before = deepcopy((loaded, outcomes))
+        with patch.object(self.store, 'get_decisions_for_ticker', return_value=loaded), patch.object(
+            self.store, 'get_outcomes_for_decision', return_value=outcomes
+        ):
+            item = self.build(self.store, 'TEST').prior_decisions[0]
+        for name in ('major_risks', 'scenarios', 'thesis_invalidation_conditions', 'missing_data'):
+            self.assertIsNot(getattr(item, name), getattr(loaded[0], name))
+        item.major_risks[0].evidence_refs.append('E999')
+        item.scenarios[0].text = 'Changed'
+        item.missing_data.append('Changed')
+        item.outcomes[0].stock_return = 999
+        self.assertEqual((loaded, outcomes), before)
+        self.assertEqual(self.store.get_decision('fixture-1'), before[0][0])
+        self.assertEqual(self.store.get_outcomes_for_decision('fixture-1'), before[1])
+
+    def test_scope_and_only_selected_outcomes_queried(self):
+        from src.models import DecisionMemoryItem
+        from unittest.mock import patch
+        names = {f.name for f in fields(DecisionMemoryItem)}
+        self.assertFalse(names & {'bull_case', 'bear_case', 'supporting_evidence',
+                                 'material_evidence_review', 'successful', 'failed', 'evidence_catalog'})
+        self.store.save_decision(record())
+        self.store.save_decision(record(decision_id='new', decision_timestamp='2026-02-01'))
+        with patch.object(self.store, 'get_outcomes_for_decision', wraps=self.store.get_outcomes_for_decision) as query:
+            self.build(self.store, 'TEST', 1)
+            query.assert_called_once_with('new')
+
+
 if __name__ == '__main__':
     unittest.main()

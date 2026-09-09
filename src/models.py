@@ -369,3 +369,32 @@ class DecisionOutcome:
                 type(value) not in (int, float) or not isfinite(value) or value < 0
             ):
                 raise ValueError(f"{name} must be a finite non-negative number or None.")
+
+
+@dataclass
+class DecisionMemoryItem:
+    """Compact past decision with separately observed outcomes, without quality labels."""
+
+    decision_id: str
+    ticker: str
+    decision_timestamp: str
+    recommendation: str
+    confidence_score: float
+    investment_horizon: str | None
+    reasoning_summary: str
+    major_risks: list[InterpretationStatement]
+    thesis_invalidation_conditions: list[ForecastStatement]
+    scenarios: list[ForecastStatement]
+    missing_data: list[str]
+    outcomes: list[DecisionOutcome]
+
+
+@dataclass
+class DecisionMemoryContext:
+    """Future historical context only; current verified evidence must remain primary.
+
+    Memory must never replace current evidence. No AI integration is provided here.
+    """
+
+    ticker: str
+    prior_decisions: list[DecisionMemoryItem]
