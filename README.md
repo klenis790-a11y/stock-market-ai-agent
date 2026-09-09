@@ -150,3 +150,20 @@ currencies, so valuation assumes comparable currency units. V0.2 adds no broker 
 orders, portfolio persistence, optimization, backtesting, dashboards or price prediction.
 The offline suite covers input parsing, valuation, concentration, policy boundaries,
 quote reuse/degradation, CLI routing and mocked portfolio-aware analysis.
+
+## V0.3 decision history inspection
+
+DecisionStore provides append-only SQLite storage for decisions and separately linked
+outcomes. Saving a validated analysis is opt-in through the Python pipeline API; the
+normal research CLI does not create a database or save decisions automatically.
+Inspect an existing database with:
+
+```sh
+.venv/bin/python -m src.main history AAPL --db decisions.db --limit 5
+```
+
+`--db` is required and must point to an existing initialized database. Inspection opens
+it read-only and never retrieves market data or calls OpenAI. The default limit is five
+newest decisions; zero shows none. Outcome returns are decimal fractions. History is
+context only, distinct from current verified evidence, and does not influence AI
+recommendations. No evaluation judgments are produced.

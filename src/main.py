@@ -38,7 +38,50 @@ def format_analysis(analysis: InvestmentAnalysis) -> str:
     return '\n'.join(lines)
 
 
+def history_main(argv):
+    import sqlite3
+    from src.decision_store import DecisionStore
+    from src.decision_memory import build_decision_memory_context
+
+    parser = argparse.ArgumentParser(description="Inspect stored decisions (read-only)")
+    parser.add_argument("ticker")
+    parser.add_argument("--db", required=True, help="Existing decision database path")
+    parser.add_argument("--limit", type=int, default=5)
+    args = parser.parse_args(argv)
+    if not args.ticker.strip():
+        parser.error("A non-empty ticker is required.")
+    if args.limit < 0:
+        parser.error("limit must be a non-negative integer.")
+    try:
+        if not Path(args.db).is_file():
+            parser.exit(1, "History failed: database does not exist.\n")
+        context = build_decision_memory_context(
+            DecisionStore(args.db, read_only=True), args.ticker, args.limit,
+        )
+    except (sqlite3.Error, OSError, ValueError, TypeError, KeyError):
+        parser.exit(1, "History failed: unable to read decision history.\n")
+    if not context.prior_decisions:
+        print(f"No stored decisions for {context.ticker}.")
+    for item in context.prior_decisions:
+        print(f"{item.decision_timestamp} | {item.ticker} | {item.recommendation} | Confidence: {item.confidence_score}")
+        print(f"Investment horizon: {item.investment_horizon or 'Not supplied'}")
+        print(f"Reasoning: {item.reasoning_summary}")
+        for label, statements in (("Major risks", item.major_risks),
+                                  ("Thesis invalidation conditions", item.thesis_invalidation_conditions)):
+            print(f"{label}:")
+            for statement in statements:
+                print(f"- {statement.text}")
+        print("Missing data: " + ('; '.join(item.missing_data) or 'None'))
+        print("Outcomes:" if item.outcomes else "Outcomes: None recorded.")
+        for outcome in item.outcomes:
+            print(f"- {outcome.evaluation_horizon}: stock return={outcome.stock_return}, "
+                  f"benchmark return={outcome.benchmark_return}, excess return={outcome.excess_return}")
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "history":
+        history_main(sys.argv[2:])
+        return
     parser = argparse.ArgumentParser(description="V0.1 single-stock research (environment keys required)")
     parser.add_argument("ticker")
     parser.add_argument("--portfolio", help="Comma-separated TICKER:SHARES:AVERAGE_COST; empty for cash-only")

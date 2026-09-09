@@ -590,5 +590,103 @@ class DecisionMemoryTests(unittest.TestCase):
             query.assert_called_once_with('new')
 
 
+class HistoryCLITests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from src.decision_store import DecisionStore
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'history ?#.sqlite'
+        self.store = DecisionStore(str(self.path))
+        self.store.initialize()
+
+    def cli(self, *args):
+        import io
+        from contextlib import ExitStack, redirect_stdout, redirect_stderr
+        from unittest.mock import patch
+        from src import main
+        output = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch('sys.argv', ['main.py', 'history', *args]))
+            stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')))
+            stock = stack.enter_context(patch.object(main, 'run_stock_research'))
+            portfolio = stack.enter_context(patch.object(main, 'run_portfolio_aware_research'))
+            stack.enter_context(redirect_stdout(output))
+            stack.enter_context(redirect_stderr(output))
+            code = 0
+            try:
+                main.main()
+            except SystemExit as error:
+                code = error.code
+            stock.assert_not_called()
+            portfolio.assert_not_called()
+        return code, output.getvalue()
+
+    def test_one_decision_output(self):
+        self.store.save_decision(record(major_risks=[InterpretationStatement('Fixture risk', ['E001'])],
+                                       missing_data=['Fixture missing']))
+        code, text = self.cli(' test ', '--db', str(self.path))
+        self.assertEqual(code, 0)
+        for value in ('TEST', 'Hold', '60', 'Fixture reasoning', 'Fixture risk', 'Fixture missing', 'None recorded'):
+            self.assertIn(value, text)
+        self.assertNotIn('material_evidence_review', text)
+
+    def test_multiple_order_and_limits(self):
+        for i in range(7):
+            self.store.save_decision(record(decision_id=str(i), decision_timestamp=f'2026-01-0{i+1}'))
+        code, text = self.cli('TEST', '--db', str(self.path))
+        self.assertEqual(code, 0)
+        self.assertEqual(text.count('Confidence:'), 5)
+        self.assertLess(text.index('2026-01-07'), text.index('2026-01-06'))
+        self.assertEqual(self.cli('TEST', '--db', str(self.path), '--limit', '2')[1].count('Confidence:'), 2)
+
+    def test_empty_history(self):
+        self.assertEqual(self.cli('OTHER', '--db', str(self.path)), (0, 'No stored decisions for OTHER.\n'))
+
+    def test_missing_database_no_creation(self):
+        missing = self.path.parent / 'missing.sqlite'
+        code, text = self.cli('TEST', '--db', str(missing))
+        self.assertNotEqual(code, 0)
+        self.assertIn('does not exist', text)
+        self.assertFalse(missing.exists())
+
+    def test_bad_arguments(self):
+        for args in [('TEST', '--db', str(self.path), '--limit', '-1'),
+                     (' ', '--db', str(self.path)), ('TEST',),
+                     ('TEST', '--db', str(self.path), '--limit', 'abc')]:
+            code, text = self.cli(*args)
+            self.assertNotEqual(code, 0)
+            self.assertNotIn('Traceback', text)
+
+    def test_outcome_association(self):
+        self.store.save_decision(record())
+        self.store.save_decision(record(decision_id='new', decision_timestamp='2026-03-01'))
+        self.store.save_outcome(outcome(stock_return=.1, benchmark_return=.05, excess_return=.05))
+        code, text = self.cli('TEST', '--db', str(self.path))
+        self.assertEqual(code, 0)
+        self.assertLess(text.index('None recorded'), text.index('2026-01-01'))
+        self.assertIn('1 month: stock return=0.1, benchmark return=0.05, excess return=0.05', text)
+
+    def test_read_only_enforced_and_unchanged(self):
+        import sqlite3
+        from src.decision_store import DecisionStore
+        self.store.save_decision(record())
+        before = self.path.read_bytes()
+        self.cli('TEST', '--db', str(self.path))
+        self.assertEqual(self.path.read_bytes(), before)
+        readonly = DecisionStore(str(self.path), read_only=True)
+        with self.assertRaises(sqlite3.OperationalError):
+            readonly.save_decision(record(decision_id='forbidden'))
+        self.assertEqual(self.store.get_decision('fixture-1'), record())
+
+    def test_unreadable_database(self):
+        self.path.write_text('Not SQLite')
+        code, text = self.cli('TEST', '--db', str(self.path))
+        self.assertNotEqual(code, 0)
+        self.assertIn('unable to read', text)
+        self.assertNotIn('Traceback', text)
+
+
 if __name__ == '__main__':
     unittest.main()

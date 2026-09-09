@@ -3,6 +3,7 @@ from contextlib import closing
 from dataclasses import asdict
 import json
 import sqlite3
+from pathlib import Path
 
 from src.models import DecisionOutcome, DecisionRecord, InterpretationStatement, ForecastStatement, MaterialEvidenceReview
 
@@ -46,11 +47,15 @@ class DecisionStore:
     representation for chronological history. Stored timestamps are not reinterpreted.
     """
 
-    def __init__(self, database_path: str):
+    def __init__(self, database_path: str, *, read_only: bool = False):
         self.database_path = database_path
+        self.read_only = read_only
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.database_path)
+        if self.read_only:
+            connection = sqlite3.connect(Path(self.database_path).resolve().as_uri() + "?mode=ro", uri=True)
+        else:
+            connection = sqlite3.connect(self.database_path)
         connection.execute('PRAGMA foreign_keys = ON')
         return connection
 
