@@ -15,16 +15,17 @@ def run_portfolio_aware_research(
 ) -> InvestmentAnalysis:
     """Assemble portfolio and stock evidence, then request analysis exactly once.
 
-    Known inefficiency: a held target's quote is requested once for portfolio
-    pricing and again for stock research (which retains additional quote fields).
-    These independent snapshots may differ in time; no quote is retried here.
+    Stock research runs first; its target price (including None) is reused for
+    portfolio valuation. Other holdings are quoted once in portfolio order.
     """
     if not isinstance(target_ticker, str) or not target_ticker.strip():
         raise ValueError("A non-empty ticker is required.")
     ticker = target_ticker.strip().upper()
-    snapshot = build_live_portfolio_snapshot(portfolio_input)
-    risk = assess_portfolio_risk(snapshot)
     evidence = build_stock_evidence(ticker)
+    snapshot = build_live_portfolio_snapshot(
+        portfolio_input, known_prices={ticker: evidence["retrieved_facts"]["stock"]["current_price"]},
+    )
+    risk = assess_portfolio_risk(snapshot)
     context = build_portfolio_analysis_context(snapshot, risk, ticker)
     result = analyze_investment(evidence, context)
     if on_context is not None:

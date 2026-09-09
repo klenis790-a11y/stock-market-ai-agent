@@ -119,7 +119,7 @@ Holdings use comma-separated `TICKER:SHARES:AVERAGE_COST`; whitespace is accepte
 duplicate tickers and invalid or negative quantities are rejected. Cash defaults to
 0; use `--portfolio "" --cash 5000` for cash-only input. The target need not be owned.
 Portfolio mode adds the portfolio assessment, ownership, weights and policy notes.
-No portfolios are saved. A held target currently receives two quote requests: one
-for portfolio pricing and one for stock evidence. This is a known inefficiency;
-quotes may differ in time. Existing pacing applies. V0.1 scope statements above
+No portfolios are saved. Stock research runs first; its target quote is reused for portfolio pricing,
+including an unavailable price without retry. Other holdings are quoted once.
+Existing pacing applies. V0.1 scope statements above
 refer to standalone mode; V0.2 adds portfolio context without trading or persistence.

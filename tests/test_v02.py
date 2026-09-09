@@ -626,11 +626,36 @@ class PortfolioPipelineTests(unittest.TestCase):
         self.assertEqual(context['target_portfolio_weight'], .8)
         self.assertEqual(context['portfolio_risk_assessment']['oversized_positions'], ['TEST'])
         self.assertTrue(context['portfolio_risk_assessment']['largest_position_over_limit'])
-        # One portfolio quote plus the documented independent stock quote.
-        self.assertEqual(self.providers['get_global_quote'].call_args_list, [call('TEST'), call('TEST')])
+        # Target quote is shared by stock and portfolio evidence.
+        self.assertEqual(self.providers['get_global_quote'].call_args_list, [call('TEST')])
         for name, mock in self.providers.items():
             if name != 'get_global_quote':
                 mock.assert_called_once()
+
+    def test_owned_target_and_other_quote_once(self):
+        portfolio = PortfolioInput([PortfolioPositionInput('OTHER', 1, 10),
+                                    PortfolioPositionInput('TEST', 2, 10)], 10)
+        self.pipeline.run_portfolio_aware_research('TEST', portfolio)
+        self.assertEqual(self.providers['get_global_quote'].call_args_list,
+                         [call('TEST'), call('OTHER')])
+        context = self.inputs[0]['PORTFOLIO_CONTEXT']
+        self.assertEqual(context['target_position_value'], 40)
+        self.assertAlmostEqual(context['target_portfolio_weight'], 40 / 70)
+        self.assertEqual(context['target_current_price'],
+                         self.inputs[0]['evidence_package']['retrieved_facts']['stock']['current_price'])
+        self.request.assert_called_once()
+
+    def test_failed_target_quote_reused_without_retry(self):
+        self.providers['get_global_quote'].side_effect = [RuntimeError('Fixture unavailable'),
+                                                        {'Global Quote': {'05. price': '20'}}]
+        result = self.pipeline.run_portfolio_aware_research('TEST', PortfolioInput([
+            PortfolioPositionInput('TEST', 2, 10), PortfolioPositionInput('OTHER', 1, 10)], 10))
+        self.assertEqual(self.providers['get_global_quote'].call_args_list,
+                         [call('TEST'), call('OTHER')])
+        context = self.inputs[0]['PORTFOLIO_CONTEXT']
+        self.assertIsNone(context['target_current_price'])
+        self.assertIsNone(context['target_portfolio_weight'])
+        self.assertIn('Latest available quote unavailable', result.missing_data)
 
     def test_unowned_success(self):
         portfolio = PortfolioInput([PortfolioPositionInput('OTHER', 1, 10)], 20)
@@ -639,7 +664,7 @@ class PortfolioPipelineTests(unittest.TestCase):
         self.assertFalse(context['owns_target'])
         self.assertEqual(context['target_shares'], 0)
         self.assertEqual(context['target_portfolio_weight'], 0)
-        self.assertEqual(self.providers['get_global_quote'].call_args_list, [call('OTHER'), call('TEST')])
+        self.assertEqual(self.providers['get_global_quote'].call_args_list, [call('TEST'), call('OTHER')])
         self.request.assert_called_once()
 
     def test_empty_cash_only(self):
@@ -661,7 +686,7 @@ class PortfolioPipelineTests(unittest.TestCase):
         self.assertFalse(context['portfolio_risk_assessment']['concentration_policy_evaluable'])
         self.assertTrue(any('Portfolio concentration policy unavailable' in x for x in result.missing_data))
         self.request.assert_called_once()
-        self.assertEqual(self.providers['get_global_quote'].call_count, 2)
+        self.assertEqual(self.providers['get_global_quote'].call_count, 1)
 
     def test_critical_failure_stops_analysis(self):
         for name in ('get_company_overview', 'get_income_statement', 'get_balance_sheet',
@@ -786,6 +811,16 @@ class PortfolioCLITests(unittest.TestCase):
         self.assertIn('Target owned: True', out.getvalue())
         self.assertIn('Target portfolio weight: 1.0', out.getvalue())
         self.assertIn('TEST exceeds max single-position weight.', out.getvalue())
+
+
+class PortfolioInstructionCleanupTests(unittest.TestCase):
+    def test_citation_and_valuation_distinction(self):
+        from src.analysis import PORTFOLIO_INSTRUCTIONS
+        for text in ('A stock ID does not prove a portfolio fact',
+                     'stock-specific portion', 'portfolio-only scenario with unrelated stock IDs',
+                     'Valuation conclusions must identify the actual',
+                     'unless comparative evidence is supplied'):
+            self.assertIn(text, PORTFOLIO_INSTRUCTIONS)
 
 
 if __name__ == '__main__':

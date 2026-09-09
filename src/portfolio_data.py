@@ -7,12 +7,19 @@ from src.normalizers import normalize_global_quote
 from src.portfolio_calculations import build_portfolio_snapshot
 
 
-def get_portfolio_prices(portfolio_input: PortfolioInput) -> dict[str, float | None]:
+def get_portfolio_prices(
+    portfolio_input: PortfolioInput, *, known_prices: dict[str, float | None] | None = None,
+) -> dict[str, float | None]:
     """Request each ticker once in input order; unavailable quotes remain None."""
+    # Per-run supplied prices include failed quotes (None); never retry those.
     prices = {}
     for position in portfolio_input.positions:
         ticker = position.ticker
         if ticker in prices:
+            continue
+        if known_prices is not None and ticker in known_prices:
+            price = known_prices[ticker]
+            prices[ticker] = price if price is not None and price >= 0 else None
             continue
         try:
             quote = api.get_global_quote(ticker)
@@ -27,6 +34,8 @@ def get_portfolio_prices(portfolio_input: PortfolioInput) -> dict[str, float | N
     return prices
 
 
-def build_live_portfolio_snapshot(portfolio_input: PortfolioInput) -> PortfolioSnapshot:
+def build_live_portfolio_snapshot(
+    portfolio_input: PortfolioInput, *, known_prices: dict[str, float | None] | None = None,
+) -> PortfolioSnapshot:
     """Retrieve latest available prices (not assumed real-time), then calculate."""
-    return build_portfolio_snapshot(portfolio_input, get_portfolio_prices(portfolio_input))
+    return build_portfolio_snapshot(portfolio_input, get_portfolio_prices(portfolio_input, known_prices=known_prices))
