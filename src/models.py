@@ -398,3 +398,77 @@ class DecisionMemoryContext:
 
     ticker: str
     prior_decisions: list[DecisionMemoryItem]
+
+
+def _normalize_specialist_identity(ticker: str, specialist_name: str) -> tuple[str, str]:
+    for name, value in (("ticker", ticker), ("specialist_name", specialist_name)):
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{name} must be non-empty.")
+    return ticker.strip().upper(), specialist_name.strip()
+
+
+@dataclass
+class SpecialistAnalysis:
+    """Generic specialist interpretations, not retrieved facts or a final recommendation.
+
+    Existing evidence IDs retain their provenance; specialists cannot alter IDs,
+    fabricate missing evidence, or overwrite missing current evidence. Final
+    recommendation, confidence and bull/bear/risk synthesis belong to the eventual
+    synthesis layer, whose output remains InvestmentAnalysis.
+    """
+
+    specialist_name: str
+    ticker: str
+    summary: str
+    key_findings: list[InterpretationStatement]
+    risks: list[InterpretationStatement]
+    scenarios: list[ForecastStatement]
+    confidence_score: float
+    missing_data: list[str]
+
+    def __post_init__(self):
+        from math import isfinite
+
+        self.ticker, self.specialist_name = _normalize_specialist_identity(
+            self.ticker, self.specialist_name)
+        if not isinstance(self.summary, str) or not self.summary.strip():
+            raise ValueError("summary must be non-empty.")
+        score = self.confidence_score
+        if type(score) not in (int, float) or not isfinite(score) or not 0 <= score <= 100:
+            raise ValueError("Specialist confidence_score must be between 0 and 100.")
+
+
+@dataclass
+class SpecialistContext:
+    """Current verified evidence is authoritative; other context remains separate.
+
+    Memory is historical only: prior recommendations are not current facts,
+    outcomes retain their temporal attribution, and memory cannot replace missing
+    current evidence or trigger automatic strategy adaptation. Portfolio context
+    is optional and deterministic, not stock evidence. Specialists interpret only
+    their relevant concerns and never make the final investment recommendation.
+    """
+
+    ticker: str
+    specialist_name: str
+    research_evidence: dict
+    portfolio_context: PortfolioAnalysisContext | None = None
+    decision_memory: DecisionMemoryContext | None = None
+
+    def __post_init__(self):
+        self.ticker, self.specialist_name = _normalize_specialist_identity(
+            self.ticker, self.specialist_name)
+
+
+@dataclass
+class MultiAgentSynthesisContext:
+    """Ordered generic specialist results for eventual InvestmentAnalysis synthesis.
+
+    This is a data contract only, with no execution, voting or recommendation logic.
+    Current verified evidence remains primary over historical decision memory.
+    """
+
+    ticker: str
+    specialist_results: list[SpecialistAnalysis]
+    portfolio_context: PortfolioAnalysisContext | None = None
+    decision_memory: DecisionMemoryContext | None = None
