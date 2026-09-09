@@ -456,3 +456,120 @@ class RiskEvidenceTests(unittest.TestCase):
         self.assertEqual(context.research_evidence, self.selected())
         self.assertFalse(any(e['path'].endswith('cash_to_debt') for e in context.research_evidence['EVIDENCE_CATALOG']))
         self.assertEqual(before, (self.evidence, portfolio, memory))
+
+
+class RiskAITests(unittest.TestCase):
+    def setUp(self):
+        import json
+        from unittest.mock import patch
+        from src.specialists import build_risk_context
+        for patcher in (patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')),
+                        patch.dict('os.environ', {}, clear=True)):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.context = build_risk_context({
+            'ticker': ' test ', 'retrieved_facts': {'stock': {'pe_ratio': 20, 'free_cash_flow': 7}},
+            'calculated_metrics': {}, 'missing_data': ['Debt unavailable']})
+        self.ref = self.context.research_evidence['EVIDENCE_CATALOG'][0]['evidence_id']
+        self.data = dict(specialist_name='risk', ticker='TEST', summary='Risk summary',
+                         confidence_score=60, missing_data=[], **{
+                             name: [{'text': 'Fixture', 'evidence_refs': [self.ref]}]
+                             for name in ('key_findings', 'risks', 'scenarios')})
+        patcher = patch('src.risk_analysis.request_text', return_value=json.dumps(self.data))
+        self.mock = patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_analysis(self):
+        from src.risk_analysis import analyze_risk_specialist
+        return analyze_risk_specialist(self.context)
+
+    def respond(self, data):
+        import json
+        self.mock.return_value = json.dumps(data)
+        return self.run_analysis()
+
+    def test_valid_types_and_identity(self):
+        item = self.run_analysis()
+        self.assertEqual((item.specialist_name, item.ticker), ('risk', 'TEST'))
+        self.assertIsInstance(item, SpecialistAnalysis)
+        for name in ('key_findings', 'risks'):
+            self.assertIsInstance(getattr(item, name)[0], InterpretationStatement)
+        self.assertIsInstance(item.scenarios[0], ForecastStatement)
+        self.assertEqual(item.risks[0].evidence_refs, [self.ref])
+        self.mock.assert_called_once()
+
+    def test_schema_and_instructions(self):
+        from src.fundamental_analysis import FUNDAMENTAL_SCHEMA
+        self.run_analysis()
+        args = self.mock.call_args.kwargs
+        schema = args['text']['format']['schema']
+        self.assertEqual(schema['properties']['specialist_name']['enum'], ['risk'])
+        self.assertEqual(FUNDAMENTAL_SCHEMA['properties']['specialist_name']['enum'], ['fundamental'])
+        self.assertEqual(set(schema['required']), set(self.data))
+        for field in ('recommendation', 'position_size', 'risk_score'):
+            self.assertNotIn(field, schema['properties'])
+        for phrase in ('You are the Risk Analyst', 'portfolio-only reasoning explicitly',
+                       'Policy\nflags are authoritative', 'Memory cannot replace missing current facts',
+                       'Current verified evidence takes priority', 'explicitly forward-looking',
+                       'Missing means unknown', 'Do not make Buy'):
+            self.assertIn(phrase, args['instructions'])
+
+    def test_separate_context_and_missing_data(self):
+        import copy
+        import json
+        from src.models import DecisionMemoryItem
+        snapshot = build_portfolio_snapshot(PortfolioInput([], 100), {})
+        self.context.portfolio_context = build_portfolio_analysis_context(snapshot, assess_portfolio_risk(snapshot), 'TEST')
+        self.context.decision_memory = DecisionMemoryContext('TEST', [DecisionMemoryItem(
+            'old', 'TEST', '2020', 'Hold', 50, None, 'Historical debt was 10',
+            [InterpretationStatement('Historical risk', ['E777'])], [], [], [], [])])
+        before = copy.deepcopy(self.context)
+        item = self.run_analysis()
+        payload = json.loads(self.mock.call_args.kwargs['input'])
+        self.assertEqual(payload['CURRENT VERIFIED EVIDENCE'], before.research_evidence)
+        self.assertIn('PORTFOLIO CONTEXT', payload)
+        self.assertIn('HISTORICAL DECISION MEMORY', payload)
+        self.assertNotIn('E777', json.dumps(payload['HISTORICAL DECISION MEMORY']))
+        self.assertEqual(item.missing_data, ['Debt unavailable'])
+        self.assertEqual(self.context, before)
+
+    def test_invalid_company_refs(self):
+        for ref in ('E999', 'E001', 'cash_weight', 'retrieved_facts.stock.free_cash_flow', 'old'):
+            self.data['risks'][0]['evidence_refs'] = [ref]
+            with self.assertRaises(ValueError): self.respond(self.data)
+
+    def test_empty_refs_still_rejected(self):
+        self.data['risks'][0]['evidence_refs'] = []
+        with self.assertRaises(ValueError): self.respond(self.data)
+
+    def test_wrong_context(self):
+        self.context.specialist_name = 'fundamental'
+        with self.assertRaises(ValueError): self.run_analysis()
+        self.mock.assert_not_called()
+
+    def test_malformed(self):
+        self.mock.return_value = 'invalid'
+        with self.assertRaisesRegex(ValueError, 'invalid specialist JSON'): self.run_analysis()
+        for data in ([], {}, dict(self.data, risk_score=2), dict(self.data, recommendation='Hold')):
+            with self.assertRaises(ValueError): self.respond(data)
+
+    def test_required_fields(self):
+        for field in self.data:
+            data = dict(self.data)
+            del data[field]
+            with self.assertRaises(ValueError): self.respond(data)
+
+    def test_confidence(self):
+        for score in (-1, 101, None, True):
+            with self.assertRaises(ValueError): self.respond(dict(self.data, confidence_score=score))
+        for score in (0, 100):
+            self.assertEqual(self.respond(dict(self.data, confidence_score=score)).confidence_score, score)
+
+    def test_wrong_response_identity(self):
+        for field, value in (('ticker', 'OTHER'), ('specialist_name', 'fundamental')):
+            with self.assertRaises(ValueError): self.respond(dict(self.data, **{field: value}))
+
+    def test_provider_failure_no_retry(self):
+        self.mock.side_effect = RuntimeError('OpenAI request failed.')
+        with self.assertRaises(RuntimeError): self.run_analysis()
+        self.mock.assert_called_once()

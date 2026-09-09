@@ -55,9 +55,9 @@ FUNDAMENTAL_SCHEMA = _object_schema({
 })
 
 
-def _context_ids(context: SpecialistContext) -> set[str]:
-    if context.specialist_name != 'fundamental':
-        raise ValueError('Fundamental analysis requires a fundamental context.')
+def _context_ids(context: SpecialistContext, specialist_name: str = 'fundamental') -> set[str]:
+    if context.specialist_name != specialist_name:
+        raise ValueError(f'{specialist_name} analysis requires a matching specialist context.')
     evidence = context.research_evidence
     if (not isinstance(evidence, dict) or
             not isinstance(evidence.get('ticker'), str) or
@@ -83,10 +83,10 @@ def _context_ids(context: SpecialistContext) -> set[str]:
     return ids
 
 
-def _parse_result(data: dict, context: SpecialistContext, allowed_ids: set[str]) -> SpecialistAnalysis:
+def _parse_result(data: dict, context: SpecialistContext, allowed_ids: set[str], specialist_name: str = 'fundamental') -> SpecialistAnalysis:
     if not isinstance(data, dict) or set(data) != set(FUNDAMENTAL_SCHEMA['required']):
         raise ValueError('Specialist response has missing or unexpected fields.')
-    if data['specialist_name'] != 'fundamental' or data['ticker'] != context.ticker:
+    if data['specialist_name'] != specialist_name or data['ticker'] != context.ticker:
         raise ValueError('Specialist response identity does not match context.')
     parsed = dict(data)
     for name in ('key_findings', 'risks', 'scenarios'):
