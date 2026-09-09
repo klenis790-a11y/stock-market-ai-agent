@@ -1,10 +1,13 @@
 import argparse
+import sqlite3
 import sys
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.decision_store import DecisionStore
+from src.decision_history import utc_decision_timestamp
 from src.models import ForecastStatement, InvestmentAnalysis
 from src.research_pipeline import run_stock_research
 from src.portfolio_input import parse_portfolio_input
@@ -86,19 +89,55 @@ def main():
     parser.add_argument("ticker")
     parser.add_argument("--portfolio", help="Comma-separated TICKER:SHARES:AVERAGE_COST; empty for cash-only")
     parser.add_argument("--cash", type=float, default=0.0)
+    parser.add_argument("--db", help="Decision history SQLite path")
+    parser.add_argument("--use-memory", action="store_true", help="Read prior ticker history; requires an existing --db")
+    parser.add_argument("--memory-limit", type=int, default=None, help="Prior decisions to load (default 5); requires --use-memory")
+    parser.add_argument("--save-decision", action="store_true", help="Save validated decision; requires --db")
+    parser.add_argument("--horizon", help="Optional investment horizon for a saved decision")
     args = parser.parse_args()
     contexts = []
+    loaded_memory = []
+    saved_decisions = []
     try:
-        if args.portfolio is None:
-            if args.cash != 0.0:
-                raise ValueError("--cash requires --portfolio.")
-            result = run_stock_research(args.ticker)
+        if not args.ticker.strip():
+            raise ValueError("A non-empty ticker is required.")
+        if args.memory_limit is not None and (args.memory_limit < 0 or not args.use_memory):
+            raise ValueError("--memory-limit requires --use-memory and a non-negative value.")
+        if (args.use_memory or args.save_decision) and not args.db:
+            raise ValueError("--db is required with --use-memory or --save-decision.")
+        if args.horizon is not None and not args.save_decision:
+            raise ValueError("--horizon requires --save-decision.")
+        if args.portfolio is None and args.cash != 0.0:
+            raise ValueError("--cash requires --portfolio.")
+        portfolio = parse_portfolio_input(args.portfolio, args.cash) if args.portfolio is not None else None
+        options = {}
+        if args.use_memory or args.save_decision:
+            if args.use_memory and not Path(args.db).is_file():
+                raise ValueError("Memory database must already exist.")
+            store = DecisionStore(args.db, read_only=not args.save_decision)
+            if args.save_decision:
+                store.initialize()
+            options = dict(
+                decision_store=store, persist_decision=args.save_decision,
+                decision_timestamp=utc_decision_timestamp() if args.save_decision else None,
+                investment_horizon=args.horizon, use_decision_memory=args.use_memory,
+                memory_limit=args.memory_limit if args.memory_limit is not None else 5,
+                on_memory=loaded_memory.append, on_decision_saved=saved_decisions.append,
+            )
+        if portfolio is None:
+            result = run_stock_research(args.ticker, **options)
         else:
-            portfolio = parse_portfolio_input(args.portfolio, args.cash)
-            result = run_portfolio_aware_research(args.ticker, portfolio, on_context=contexts.append)
+            result = run_portfolio_aware_research(args.ticker, portfolio, on_context=contexts.append, **options)
+    except (sqlite3.Error, OSError):
+        parser.exit(1, "Research failed: decision database operation failed. No retry performed.\n")
     except (RuntimeError, ValueError) as error:
         parser.exit(1, f"Research failed: {error}\n")
     print(format_analysis(result))
+    if args.use_memory:
+        print("Historical memory used: YES")
+        print(f"Prior decisions loaded: {len(loaded_memory[0].prior_decisions) if loaded_memory else 0}")
+    for saved in saved_decisions:
+        print(f"Decision saved: {saved.decision_id}")
     if args.portfolio is not None:
         print(f"\nPortfolio assessment: {result.portfolio_assessment}")
         if contexts:

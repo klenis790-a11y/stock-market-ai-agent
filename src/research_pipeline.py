@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from src.decision_memory import build_decision_memory_context
 from src.decision_history import save_analysis_decision
 from src.decision_store import DecisionStore
@@ -9,7 +10,7 @@ from src import alpha_vantage_client as api
 from src import normalizers as normalize
 from src.analysis import analyze_investment
 from src.evidence import build_evidence_package
-from src.models import DecisionMemoryContext, InvestmentAnalysis
+from src.models import DecisionRecord, DecisionMemoryContext, InvestmentAnalysis
 from src.research_snapshot import build_research_snapshot
 
 
@@ -69,6 +70,8 @@ def run_stock_research(
     memory_context: DecisionMemoryContext | None = None,
     use_decision_memory: bool = False, memory_limit: int = 5,
     persist_decision: bool = True,
+    on_memory: Callable[[DecisionMemoryContext], None] | None = None,
+    on_decision_saved: Callable[[DecisionRecord], None] | None = None,
 ) -> InvestmentAnalysis:
     # Preserve legacy store-implies-save behavior; False permits read-only use.
     if type(memory_limit) is not int or memory_limit < 0:
@@ -84,8 +87,12 @@ def run_stock_research(
     evidence = build_stock_evidence(ticker)
     if use_decision_memory:
         memory_context = build_decision_memory_context(decision_store, evidence["ticker"], memory_limit)
+    if memory_context is not None and on_memory is not None:
+        on_memory(memory_context)
     result = analyze_investment(evidence,
                                 **({"memory_context": memory_context} if memory_context is not None else {}))
     if persist_decision and decision_store is not None:
-        save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
+        saved = save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
+        if on_decision_saved is not None:
+            on_decision_saved(saved)
     return result

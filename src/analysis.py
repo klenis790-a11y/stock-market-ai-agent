@@ -84,6 +84,11 @@ an ID for missing evidence. Missing news/transcripts cannot establish events or 
 Quotes are latest available quotes, not assumed real-time.
 
 TEMPORAL ATTRIBUTION
+Before saying earlier, later, previous, latest, subsequent or current, explicitly compare
+supplied dates/periods. Financial-statement chronology follows fiscal period ending dates:
+an annual period cannot occur after a later-dated transcript/event. Transcript/guidance
+chronology uses its actual supplied period/date context, not retrieval time. If chronology
+cannot be established, say timing is unclear rather than infer or invent it.
 Use only dates and period context supplied in evidence; do not invent dates, numbered
 fiscal quarters, timestamp precision, or current status from model memory.
 For the latest available quote, latest_trading_day is the applicable market date.
@@ -298,7 +303,12 @@ MEMORY_INSTRUCTIONS = """
 CURRENT VERIFIED EVIDENCE versus HISTORICAL DECISION MEMORY
 The evidence_package, EVIDENCE_CATALOG and MATERIAL_EVIDENCE_CHECKLIST are CURRENT
 VERIFIED EVIDENCE and authoritative for current facts. HISTORICAL_DECISION_MEMORY
-records previous beliefs and separately observed later outcomes; identify any discussion
+records previous beliefs and separately observed later outcomes. Any memory-derived claim
+must be explicitly attributed to the previous stored analysis or historical decision
+context. A prior recommendation is not the current recommendation, current evidence,
+a retrieved current fact, or independently verified current information. Mention it only
+when materially relevant; if referenced, explicitly identify it as a prior recommendation.
+Identify any discussion
 explicitly as historical context. Historical statements are not current facts unless
 independently supported by current evidence. Previous recommendations are not evidence
 that the same recommendation is correct now. Memory must not override contradictory

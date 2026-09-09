@@ -914,5 +914,129 @@ class AutomaticMemoryTests(unittest.TestCase):
                 save.assert_called_once()
 
 
+class MemoryWorkflowCLITests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.path = Path(self.temp.name) / 'decisions.sqlite'
+
+    def cli(self, args, failure=False):
+        import io, json
+        from contextlib import ExitStack, redirect_stdout, redirect_stderr
+        from unittest.mock import patch
+        from src import main, analysis, research_pipeline
+        from test_v01 import evidence, payload
+        out = io.StringIO()
+        with ExitStack() as stack:
+            stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')))
+            retrieve = stack.enter_context(patch.object(research_pipeline, 'build_stock_evidence', return_value=evidence()))
+            requests = []
+            def respond(**kwargs):
+                if failure:
+                    raise RuntimeError('Fixture analysis failure')
+                data = json.loads(kwargs['input'])
+                requests.append(data)
+                return json.dumps(payload(data['evidence_package']))
+            request = stack.enter_context(patch.object(analysis, 'request_text', side_effect=respond))
+            stack.enter_context(patch('sys.argv', ['main.py', 'TEST', *args]))
+            stack.enter_context(redirect_stdout(out))
+            stack.enter_context(redirect_stderr(out))
+            code = 0
+            try:
+                main.main()
+            except SystemExit as error:
+                code = error.code
+        return code, out.getvalue(), retrieve.call_count, request.call_count, requests
+
+    def test_invalid_controls_before_providers(self):
+        for args in (['--use-memory'], ['--save-decision'],
+                     ['--memory-limit', '5'], ['--use-memory', '--db', str(self.path)],
+                     ['--use-memory', '--db', str(self.path), '--memory-limit', '-1']):
+            with self.subTest(args=args):
+                code, _, retrieves, requests, _ = self.cli(args)
+                self.assertNotEqual(code, 0)
+                self.assertEqual((retrieves, requests), (0, 0))
+                self.assertFalse(self.path.exists())
+
+    def test_save_only_initializes_confirms_and_preserves_horizon(self):
+        from src.decision_store import DecisionStore
+        code, text, _, requests, inputs = self.cli(['--save-decision', '--db', str(self.path), '--horizon', '12 months'])
+        self.assertEqual(code, 0)
+        self.assertEqual(requests, 1)
+        self.assertNotIn('HISTORICAL_DECISION_MEMORY', inputs[0])
+        rows = DecisionStore(str(self.path)).get_decisions_for_ticker('TEST')
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].investment_horizon, '12 months')
+        self.assertRegex(rows[0].decision_timestamp, r'^\d{8}T\d{6}\.\d{6}Z$')
+        self.assertIn('Decision saved: ' + rows[0].decision_id, text)
+
+    def test_memory_only_read_only_default_limit(self):
+        from src.decision_store import DecisionStore
+        store = DecisionStore(str(self.path)); store.initialize()
+        for i in range(6):
+            store.save_decision(record(decision_id=str(i), decision_timestamp=f'2026-01-0{i+1}'))
+        before = self.path.read_bytes()
+        code, text, _, requests, inputs = self.cli(['--use-memory', '--db', str(self.path)])
+        self.assertEqual(code, 0)
+        self.assertEqual(requests, 1)
+        self.assertEqual(len(inputs[0]['HISTORICAL_DECISION_MEMORY']['prior_decisions']), 5)
+        self.assertIn('Historical memory used: YES', text)
+        self.assertIn('Prior decisions loaded: 5', text)
+        self.assertNotIn('Decision saved:', text)
+        self.assertEqual(self.path.read_bytes(), before)
+
+    def test_memory_and_save_prior_only(self):
+        from src.decision_store import DecisionStore
+        store = DecisionStore(str(self.path)); store.initialize(); store.save_decision(record())
+        code, text, _, _, inputs = self.cli(['--use-memory', '--save-decision', '--db', str(self.path)])
+        self.assertEqual(code, 0)
+        self.assertEqual([r['decision_id'] for r in inputs[0]['HISTORICAL_DECISION_MEMORY']['prior_decisions']], ['fixture-1'])
+        self.assertEqual(len(store.get_decisions_for_ticker('TEST')), 2)
+        self.assertIn('Prior decisions loaded: 1', text)
+        self.assertIn('Decision saved:', text)
+
+    def test_failed_analysis_no_save(self):
+        from src.decision_store import DecisionStore
+        code, text, _, requests, _ = self.cli(['--save-decision', '--db', str(self.path)], failure=True)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(requests, 1)
+        self.assertNotIn('Decision saved:', text)
+        self.assertEqual(DecisionStore(str(self.path)).get_decisions_for_ticker('TEST'), [])
+
+    def test_no_flags_db_path_ignored(self):
+        code, text, _, _, inputs = self.cli(['--db', str(self.path)])
+        self.assertEqual(code, 0)
+        self.assertFalse(self.path.exists())
+        self.assertNotIn('HISTORICAL_DECISION_MEMORY', inputs[0])
+        self.assertNotIn('Decision saved:', text)
+
+
+class AttributionChronologyTests(unittest.TestCase):
+    def test_rules_reach_actual_request(self):
+        import json
+        from unittest.mock import patch
+        from src import analysis
+        from src.models import DecisionMemoryContext
+        from test_v01 import evidence, payload
+        data = evidence()
+        with patch.object(analysis, 'request_text', return_value=json.dumps(payload(data))) as request:
+            analysis.analyze_investment(data, memory_context=DecisionMemoryContext('TEST', []))
+        instructions = request.call_args.kwargs['instructions']
+        for rule in ('explicitly identify it as a prior recommendation',
+                     'not the current recommendation, current evidence',
+                     'satisfy current material-evidence review coverage',
+                     'not the trading date or a new effective date',
+                     'chronology follows fiscal period ending dates',
+                     'annual period cannot occur after a later-dated transcript/event',
+                     'actual supplied period/date context, not retrieval time',
+                     'say timing is unclear rather than infer or invent it',
+                     'Historical guidance is evidence of what management said then, not current guidance'):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, instructions)
+        request.assert_called_once()
+
+
 if __name__ == '__main__':
     unittest.main()

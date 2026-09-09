@@ -5,7 +5,7 @@ from src.decision_store import DecisionStore
 from collections.abc import Callable
 
 from src.analysis import analyze_investment
-from src.models import DecisionMemoryContext, InvestmentAnalysis, PortfolioInput, PortfolioAnalysisContext
+from src.models import DecisionRecord, DecisionMemoryContext, InvestmentAnalysis, PortfolioInput, PortfolioAnalysisContext
 from src.portfolio_context import build_portfolio_analysis_context
 from src.portfolio_data import build_live_portfolio_snapshot
 from src.portfolio_risk import assess_portfolio_risk
@@ -19,6 +19,8 @@ def run_portfolio_aware_research(
     memory_context: DecisionMemoryContext | None = None,
     use_decision_memory: bool = False, memory_limit: int = 5,
     persist_decision: bool = True,
+    on_memory: Callable[[DecisionMemoryContext], None] | None = None,
+    on_decision_saved: Callable[[DecisionRecord], None] | None = None,
     on_context: Callable[[PortfolioAnalysisContext], None] | None = None,
 ) -> InvestmentAnalysis:
     """Assemble portfolio and stock evidence, then request analysis exactly once.
@@ -48,10 +50,14 @@ def run_portfolio_aware_research(
     context = build_portfolio_analysis_context(snapshot, risk, ticker)
     if use_decision_memory:
         memory_context = build_decision_memory_context(decision_store, ticker, memory_limit)
+    if memory_context is not None and on_memory is not None:
+        on_memory(memory_context)
     result = analyze_investment(evidence, context,
                                 **({"memory_context": memory_context} if memory_context is not None else {}))
     if on_context is not None:
         on_context(context)
     if persist_decision and decision_store is not None:
-        save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
+        saved = save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
+        if on_decision_saved is not None:
+            on_decision_saved(saved)
     return result
