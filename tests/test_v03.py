@@ -198,7 +198,7 @@ class DecisionStoreTests(unittest.TestCase):
         self.store.initialize()
         with closing(sqlite3.connect(self.path)) as connection:
             tables = connection.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
-            self.assertEqual(tables, [('decisions',)])
+            self.assertEqual(set(tables), {('decisions',), ('decision_outcomes',)})
             columns = connection.execute('PRAGMA table_info(decisions)').fetchall()
             self.assertEqual({c[1] for c in columns}, {f.name for f in fields(DecisionRecord)})
             self.assertEqual(next(c for c in columns if c[1] == 'decision_id')[5], 1)
@@ -271,6 +271,96 @@ class DecisionStoreTests(unittest.TestCase):
                                                 'E001': MaterialEvidenceReview('One', 'R')})
         second = record(material_evidence_review=dict(reversed(list(first.material_evidence_review.items()))))
         self.assertEqual(_serialize(first), _serialize(second))
+
+
+class OutcomePersistenceTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from src.decision_store import DecisionStore
+        from src.decision_history import build_decision_outcome
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = DecisionStore(str(Path(self.temp.name) / 'test.sqlite'))
+        self.store.initialize()
+        self.store.save_decision(record())
+        self.build = build_decision_outcome
+
+    def test_returns_and_excess(self):
+        result = self.build('fixture-1', '2026-02-01', '30 days', 100, 120, 'BENCH', 100, 110)
+        self.assertAlmostEqual(result.stock_return, .2)
+        self.assertAlmostEqual(result.benchmark_return, .1)
+        self.assertAlmostEqual(result.excess_return, .1)
+        self.assertAlmostEqual(self.build('fixture-1', 'date', 'horizon', 100, 80).stock_return, -.2)
+
+    def test_missing_and_zero_prices(self):
+        for start, end in [(None, 100), (100, None), (0, 100), (None, None)]:
+            result = self.build('fixture-1', 'date', 'horizon', start, end, 'BENCH', start, end)
+            self.assertIsNone(result.stock_return)
+            self.assertIsNone(result.benchmark_return)
+            self.assertIsNone(result.excess_return)
+        result = self.build('fixture-1', 'date', 'horizon', 100, 0)
+        self.assertEqual(result.stock_return, -1)
+        self.assertIsNone(result.benchmark_return)
+        self.assertIsNone(result.excess_return)
+
+    def test_negative_prices_fail(self):
+        for name in ('stock_start_price', 'stock_end_price', 'benchmark_start_price', 'benchmark_end_price'):
+            args = dict(decision_id='fixture-1', evaluation_timestamp='date', evaluation_horizon='horizon',
+                        stock_start_price=100, stock_end_price=110)
+            args[name] = -1
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                self.build(**args)
+
+    def test_round_trip_durability_and_immutability(self):
+        from copy import deepcopy
+        from src.decision_store import DecisionStore
+        decision_before = self.store.get_decision('fixture-1')
+        result = self.build('fixture-1', '2026-02-01', '30 days', 100, 120, 'BENCH', 100, 110)
+        before = deepcopy(result)
+        self.store.save_outcome(result)
+        self.assertEqual(DecisionStore(self.store.database_path).get_outcome('fixture-1', '30 days'), before)
+        self.assertEqual(result, before)
+        self.assertEqual(self.store.get_decision('fixture-1'), decision_before)
+        self.assertNotIn('stock_return', {f.name for f in fields(decision_before)})
+
+    def test_duplicate_rejected(self):
+        import sqlite3
+        self.store.save_outcome(outcome())
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.save_outcome(outcome(stock_return=.5))
+        self.assertEqual(self.store.get_outcome('fixture-1', '1 month'), outcome())
+
+    def test_foreign_key_rejected(self):
+        import sqlite3
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.store.save_outcome(outcome(decision_id='absent'))
+        self.assertEqual(self.store.get_outcomes_for_decision('absent'), [])
+        self.assertIsNone(self.store.get_decision('absent'))
+
+    def test_multiple_horizons_order_and_filter(self):
+        self.store.save_decision(record(decision_id='other'))
+        for ident, stamp, horizon in [('fixture-1', '2026-04-01', '90 days'),
+                                      ('other', '2026-01-01', 'other'),
+                                      ('fixture-1', '2026-02-01', '30 days'),
+                                      ('fixture-1', '2026-02-01', '1 month')]:
+            self.store.save_outcome(outcome(decision_id=ident, evaluation_timestamp=stamp,
+                                           evaluation_horizon=horizon))
+        self.assertEqual([o.evaluation_horizon for o in self.store.get_outcomes_for_decision('fixture-1')],
+                         ['1 month', '30 days', '90 days'])
+        self.assertIsNone(self.store.get_outcome('fixture-1', 'unknown'))
+
+    def test_schema_and_null_round_trip(self):
+        from contextlib import closing
+        with closing(self.store._connect()) as connection:
+            self.assertEqual(connection.execute('PRAGMA foreign_keys').fetchone()[0], 1)
+            columns = connection.execute('PRAGMA table_info(decision_outcomes)').fetchall()
+            self.assertEqual({c[1] for c in columns}, {f.name for f in fields(DecisionOutcome)})
+            self.assertEqual({c[1]: c[5] for c in columns if c[5]},
+                             {'decision_id': 1, 'evaluation_horizon': 2})
+        result = outcome(stock_start_price=None, stock_end_price=None)
+        self.store.save_outcome(result)
+        self.assertEqual(self.store.get_outcome(result.decision_id, result.evaluation_horizon), result)
 
 
 if __name__ == '__main__':

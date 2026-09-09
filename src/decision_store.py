@@ -1,10 +1,10 @@
-"""Append-only SQLite storage of decision-time records, never later outcomes."""
+"""Append-only SQLite storage with separate decision-time and later-outcome tables."""
 from contextlib import closing
 from dataclasses import asdict
 import json
 import sqlite3
 
-from src.models import DecisionRecord, InterpretationStatement, ForecastStatement, MaterialEvidenceReview
+from src.models import DecisionOutcome, DecisionRecord, InterpretationStatement, ForecastStatement, MaterialEvidenceReview
 
 
 SCALAR_FIELDS = (
@@ -49,8 +49,13 @@ class DecisionStore:
     def __init__(self, database_path: str):
         self.database_path = database_path
 
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.database_path)
+        connection.execute('PRAGMA foreign_keys = ON')
+        return connection
+
     def initialize(self) -> None:
-        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+        with closing(self._connect()) as connection, connection:
             connection.execute('''CREATE TABLE IF NOT EXISTS decisions (
                 decision_id TEXT PRIMARY KEY NOT NULL,
                 ticker TEXT NOT NULL,
@@ -73,9 +78,24 @@ class DecisionStore:
                 material_evidence_review TEXT NOT NULL
             )''')
 
+            connection.execute('''CREATE TABLE IF NOT EXISTS decision_outcomes (
+                decision_id TEXT NOT NULL REFERENCES decisions(decision_id),
+                evaluation_timestamp TEXT NOT NULL,
+                evaluation_horizon TEXT NOT NULL,
+                stock_start_price REAL,
+                stock_end_price REAL,
+                stock_return REAL,
+                benchmark_ticker TEXT,
+                benchmark_start_price REAL,
+                benchmark_end_price REAL,
+                benchmark_return REAL,
+                excess_return REAL,
+                PRIMARY KEY (decision_id, evaluation_horizon)
+            )''')
+
     def save_decision(self, record: DecisionRecord) -> None:
         values = _serialize(record)
-        with closing(sqlite3.connect(self.database_path)) as connection, connection:
+        with closing(self._connect()) as connection, connection:
             # Plain INSERT deliberately rejects duplicate primary keys (IntegrityError).
             connection.execute('''INSERT INTO decisions (
                 decision_id, ticker, decision_timestamp, recommendation, confidence_score,
@@ -86,7 +106,7 @@ class DecisionStore:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', values)
 
     def get_decision(self, decision_id: str) -> DecisionRecord | None:
-        with closing(sqlite3.connect(self.database_path)) as connection:
+        with closing(self._connect()) as connection:
             connection.row_factory = sqlite3.Row
             row = connection.execute('SELECT * FROM decisions WHERE decision_id = ?', (decision_id,)).fetchone()
             return _deserialize(row) if row is not None else None
@@ -94,8 +114,37 @@ class DecisionStore:
     def get_decisions_for_ticker(self, ticker: str) -> list[DecisionRecord]:
         if not isinstance(ticker, str) or not ticker.strip():
             raise ValueError('A non-empty ticker is required.')
-        with closing(sqlite3.connect(self.database_path)) as connection:
+        with closing(self._connect()) as connection:
             connection.row_factory = sqlite3.Row
             rows = connection.execute('''SELECT * FROM decisions WHERE ticker = ?
                 ORDER BY decision_timestamp DESC, decision_id ASC''', (ticker.strip().upper(),)).fetchall()
             return [_deserialize(row) for row in rows]
+
+    def save_outcome(self, outcome: DecisionOutcome) -> None:
+        with closing(self._connect()) as connection, connection:
+            connection.execute('''INSERT INTO decision_outcomes (
+                decision_id, evaluation_timestamp, evaluation_horizon,
+                stock_start_price, stock_end_price, stock_return, benchmark_ticker,
+                benchmark_start_price, benchmark_end_price, benchmark_return, excess_return
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', (
+                outcome.decision_id, outcome.evaluation_timestamp, outcome.evaluation_horizon,
+                outcome.stock_start_price, outcome.stock_end_price, outcome.stock_return,
+                outcome.benchmark_ticker, outcome.benchmark_start_price, outcome.benchmark_end_price,
+                outcome.benchmark_return, outcome.excess_return,
+            ))
+
+    def get_outcome(self, decision_id: str, evaluation_horizon: str) -> DecisionOutcome | None:
+        with closing(self._connect()) as connection:
+            connection.row_factory = sqlite3.Row
+            row = connection.execute('''SELECT * FROM decision_outcomes
+                WHERE decision_id = ? AND evaluation_horizon = ?''',
+                (decision_id, evaluation_horizon)).fetchone()
+            return DecisionOutcome(**dict(row)) if row is not None else None
+
+    def get_outcomes_for_decision(self, decision_id: str) -> list[DecisionOutcome]:
+        """Lexical timestamp ascending, then horizon text for deterministic ties."""
+        with closing(self._connect()) as connection:
+            connection.row_factory = sqlite3.Row
+            rows = connection.execute('''SELECT * FROM decision_outcomes WHERE decision_id = ?
+                ORDER BY evaluation_timestamp ASC, evaluation_horizon ASC''', (decision_id,)).fetchall()
+            return [DecisionOutcome(**dict(row)) for row in rows]
