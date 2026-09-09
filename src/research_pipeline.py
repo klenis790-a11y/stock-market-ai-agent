@@ -1,3 +1,5 @@
+from src.multi_agent import run_specialists
+from src.synthesis import synthesize_investment_analysis
 from collections.abc import Callable
 from src.decision_memory import build_decision_memory_context
 from src.decision_history import save_analysis_decision
@@ -70,9 +72,13 @@ def run_stock_research(
     memory_context: DecisionMemoryContext | None = None,
     use_decision_memory: bool = False, memory_limit: int = 5,
     persist_decision: bool = True,
+    use_multi_agent: bool = False,
+    specialist_names: list[str] | None = None,
     on_memory: Callable[[DecisionMemoryContext], None] | None = None,
     on_decision_saved: Callable[[DecisionRecord], None] | None = None,
 ) -> InvestmentAnalysis:
+    if not use_multi_agent and specialist_names is not None:
+        raise ValueError("specialist_names requires use_multi_agent=True.")
     # Preserve legacy store-implies-save behavior; False permits read-only use.
     if type(memory_limit) is not int or memory_limit < 0:
         raise ValueError("memory_limit must be a non-negative integer.")
@@ -89,8 +95,15 @@ def run_stock_research(
         memory_context = build_decision_memory_context(decision_store, evidence["ticker"], memory_limit)
     if memory_context is not None and on_memory is not None:
         on_memory(memory_context)
-    result = analyze_investment(evidence,
-                                **({"memory_context": memory_context} if memory_context is not None else {}))
+    if use_multi_agent:
+        synthesis_context = run_specialists(
+            evidence["ticker"], evidence, decision_memory=memory_context,
+            specialist_names=specialist_names,
+        )
+        result = synthesize_investment_analysis(synthesis_context, evidence)
+    else:
+        result = analyze_investment(evidence,
+                                    **({"memory_context": memory_context} if memory_context is not None else {}))
     if persist_decision and decision_store is not None:
         saved = save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
         if on_decision_saved is not None:

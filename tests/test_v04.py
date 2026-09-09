@@ -793,3 +793,140 @@ class SynthesisTests(unittest.TestCase):
         self.mock.reset_mock()
         with self.assertRaises(ValueError): self.run_synthesis()
         self.mock.assert_not_called()
+
+
+class MultiAgentPipelineTests(unittest.TestCase):
+    def setUp(self):
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')))
+
+    def setup_pipeline(self, portfolio=False):
+        from unittest.mock import patch
+        from test_v01 import evidence, payload
+        from src import analysis, research_pipeline, portfolio_research_pipeline
+        module = portfolio_research_pipeline if portfolio else research_pipeline
+        self.module = module
+        self.evidence = evidence()
+        self.result = analysis._validate_analysis(payload(self.evidence), self.evidence)
+        self.build = self.stack.enter_context(patch.object(module, 'build_stock_evidence', return_value=self.evidence))
+        self.old = self.stack.enter_context(patch.object(module, 'analyze_investment', return_value=self.result))
+        self.specialists = self.stack.enter_context(patch.object(module, 'run_specialists', side_effect=lambda ticker, evidence, **kw: MultiAgentSynthesisContext(ticker, [result()], kw.get('portfolio_context'), kw.get('decision_memory'))))
+        self.synthesis = self.stack.enter_context(patch.object(module, 'synthesize_investment_analysis', return_value=self.result))
+        self.save = self.stack.enter_context(patch.object(module, 'save_analysis_decision'))
+        self.memory = self.stack.enter_context(patch.object(module, 'build_decision_memory_context', return_value=DecisionMemoryContext('TEST', [])))
+        if portfolio:
+            self.snapshot = self.stack.enter_context(patch.object(module, 'build_live_portfolio_snapshot', return_value=build_portfolio_snapshot(PortfolioInput([], 100), {})))
+            self.run = lambda **kw: module.run_portfolio_aware_research('TEST', PortfolioInput([], 100), **kw)
+        else:
+            self.run = lambda **kw: module.run_stock_research('TEST', **kw)
+
+    def test_default_standalone(self):
+        self.setup_pipeline()
+        self.assertIs(self.run(), self.result)
+        self.old.assert_called_once_with(self.evidence)
+        self.specialists.assert_not_called()
+        self.synthesis.assert_not_called()
+
+    def test_default_portfolio(self):
+        self.setup_pipeline(True)
+        self.assertIs(self.run(), self.result)
+        self.old.assert_called_once()
+        self.specialists.assert_not_called()
+        self.synthesis.assert_not_called()
+
+    def test_multi_standalone(self):
+        self.setup_pipeline()
+        self.assertIs(self.run(use_multi_agent=True), self.result)
+        self.old.assert_not_called()
+        self.build.assert_called_once()
+        self.specialists.assert_called_once_with('TEST', self.evidence, decision_memory=None, specialist_names=None)
+        self.synthesis.assert_called_once()
+        self.assertIs(self.synthesis.call_args.args[1], self.evidence)
+
+    def test_multi_portfolio_context(self):
+        self.setup_pipeline(True)
+        self.run(use_multi_agent=True)
+        context = self.specialists.call_args.kwargs['portfolio_context']
+        self.assertIsInstance(context, type(self.synthesis.call_args.args[0].portfolio_context))
+        self.assertIs(context, self.synthesis.call_args.args[0].portfolio_context)
+        self.assertNotIn('portfolio_context', self.evidence)
+        self.old.assert_not_called()
+        self.snapshot.assert_called_once()
+
+    def test_selection_pass_through(self):
+        self.setup_pipeline()
+        for names in (['risk'], ['risk', 'fundamental']):
+            self.run(use_multi_agent=True, specialist_names=names)
+            self.assertEqual(self.specialists.call_args.kwargs['specialist_names'], names)
+
+    def test_disabled_selection_fails_before_retrieval(self):
+        self.setup_pipeline()
+        with self.assertRaises(ValueError): self.run(specialist_names=['risk'])
+        self.build.assert_not_called()
+
+    def test_memory_order_and_persistence(self):
+        self.setup_pipeline()
+        events = []
+        memory = DecisionMemoryContext('TEST', [])
+        self.memory.side_effect = lambda *a: events.append('memory') or memory
+        self.specialists.side_effect = lambda ticker, evidence, **kw: events.append('specialists') or MultiAgentSynthesisContext(ticker, [], decision_memory=kw['decision_memory'])
+        self.synthesis.side_effect = lambda *a: events.append('synthesis') or self.result
+        self.save.side_effect = lambda *a: events.append('save')
+        store = object()
+        self.run(use_multi_agent=True, use_decision_memory=True, decision_store=store, decision_timestamp='2026-01-01')
+        self.assertEqual(events, ['memory', 'specialists', 'synthesis', 'save'])
+        self.assertIs(self.synthesis.call_args.args[0].decision_memory, memory)
+        self.assertEqual(memory.prior_decisions, [])
+        self.save.assert_called_once_with(self.result, store, '2026-01-01', None)
+
+    def test_explicit_portfolio_memory(self):
+        self.setup_pipeline(True)
+        memory = DecisionMemoryContext('TEST', [])
+        self.run(use_multi_agent=True, memory_context=memory)
+        self.assertIs(self.synthesis.call_args.args[0].decision_memory, memory)
+        self.memory.assert_not_called()
+
+    def test_specialist_failure(self):
+        self.setup_pipeline()
+        self.specialists.side_effect = ValueError('Unknown specialist or failed specialist')
+        with self.assertRaises(ValueError): self.run(use_multi_agent=True, decision_store=object(), decision_timestamp='now')
+        self.synthesis.assert_not_called()
+        self.save.assert_not_called()
+        self.old.assert_not_called()
+
+    def test_synthesis_failure(self):
+        self.setup_pipeline(True)
+        self.synthesis.side_effect = ValueError('Invalid synthesis')
+        with self.assertRaises(ValueError): self.run(use_multi_agent=True, decision_store=object(), decision_timestamp='now')
+        self.save.assert_not_called()
+        self.old.assert_not_called()
+        self.specialists.assert_called_once()
+        self.synthesis.assert_called_once()
+
+    def test_save_failure_no_reruns(self):
+        self.setup_pipeline()
+        self.save.side_effect = RuntimeError('Store failed')
+        with self.assertRaises(RuntimeError): self.run(use_multi_agent=True, decision_store=object(), decision_timestamp='now')
+        self.specialists.assert_called_once()
+        self.synthesis.assert_called_once()
+        self.build.assert_called_once()
+        self.old.assert_not_called()
+
+    def test_real_decision_persistence(self):
+        import tempfile
+        from pathlib import Path
+        from src.decision_store import DecisionStore
+        from src.decision_history import save_analysis_decision
+        self.setup_pipeline()
+        self.save.side_effect = save_analysis_decision
+        with tempfile.TemporaryDirectory() as directory:
+            store = DecisionStore(str(Path(directory) / 'decisions.db'))
+            store.initialize()
+            self.run(use_multi_agent=True, decision_store=store, decision_timestamp='2026-01-01')
+            records = store.get_decisions_for_ticker('TEST')
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].recommendation, self.result.recommendation)
+            self.assertEqual(store.get_outcomes_for_decision(records[0].decision_id), [])
