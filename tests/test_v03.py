@@ -363,5 +363,129 @@ class OutcomePersistenceTests(unittest.TestCase):
         self.assertEqual(self.store.get_outcome(result.decision_id, result.evaluation_horizon), result)
 
 
+class PersistenceIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from pathlib import Path
+        from contextlib import ExitStack
+        from unittest.mock import patch
+        from src import analysis, research_pipeline, portfolio_research_pipeline
+        from src.decision_store import DecisionStore
+        from test_v01 import evidence, payload
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        temp = self.stack.enter_context(tempfile.TemporaryDirectory())
+        self.store = DecisionStore(str(Path(temp) / 'test.sqlite'))
+        self.store.initialize()
+        self.data = evidence()
+        self.good = payload(self.data)
+        self.analysis = analysis._validate_analysis(self.good, self.data)
+        self.modules = [research_pipeline, portfolio_research_pipeline]
+        self.stack.enter_context(patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')))
+
+    def invoke(self, module, **kwargs):
+        from src.models import PortfolioInput
+        if module is self.modules[0]:
+            return module.run_stock_research('TEST', **kwargs)
+        return module.run_portfolio_aware_research('TEST', PortfolioInput([], 100), **kwargs)
+
+    def test_helper_round_trip_custom_metadata_and_copy(self):
+        from copy import deepcopy
+        from src.decision_history import save_analysis_decision
+        before = deepcopy(self.analysis)
+        saved = save_analysis_decision(self.analysis, self.store, '2026-01-01', '12 months', 'custom')
+        self.assertEqual(saved, self.store.get_decision('custom'))
+        self.assertEqual(saved.investment_horizon, '12 months')
+        self.assertEqual(self.analysis, before)
+        self.assertNotIn('stock_return', {f.name for f in fields(saved)})
+
+    def test_success_both_pipelines(self):
+        import json
+        from unittest.mock import patch
+        from src import analysis
+        from src.models import InvestmentAnalysis
+        for index, module in enumerate(self.modules):
+            good = dict(self.good)
+            if index:
+                good['portfolio_assessment'] = 'Fixture portfolio assessment'
+            with patch.object(module, 'build_stock_evidence', return_value=self.data) as retrieve, patch.object(
+                analysis, 'request_text', return_value=json.dumps(good)
+            ) as request, patch.object(self.store, 'save_decision', wraps=self.store.save_decision) as save:
+                result = self.invoke(module, decision_store=self.store,
+                                     decision_timestamp='2026-01-01', investment_horizon='long term')
+                self.assertIsInstance(result, InvestmentAnalysis)
+                save.assert_called_once()
+                request.assert_called_once()
+                retrieve.assert_called_once()
+        self.assertEqual(len(self.store.get_decisions_for_ticker('TEST')), 2)
+
+    def test_no_store_no_write(self):
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', return_value=self.data), patch.object(
+                module, 'analyze_investment', return_value=self.analysis
+            ), patch.object(module, 'save_analysis_decision') as save:
+                self.assertIs(self.invoke(module), self.analysis)
+                save.assert_not_called()
+
+    def test_retrieval_failure_no_save(self):
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', side_effect=RuntimeError('Retrieval failed')), patch.object(
+                module, 'analyze_investment'
+            ) as analyze, patch.object(self.store, 'save_decision') as save:
+                with self.assertRaises(RuntimeError):
+                    self.invoke(module, decision_store=self.store, decision_timestamp='date')
+                save.assert_not_called()
+                analyze.assert_not_called()
+
+    def test_analysis_and_real_validation_failures_no_save(self):
+        from unittest.mock import patch
+        from src import analysis
+        for module in self.modules:
+            for failure in (RuntimeError('Analysis failed'), '{}'):
+                with patch.object(module, 'build_stock_evidence', return_value=self.data), patch.object(
+                    analysis, 'request_text', **({'side_effect': failure} if isinstance(failure, Exception)
+                                              else {'return_value': failure})
+                ) as request, patch.object(self.store, 'save_decision') as save:
+                    with self.assertRaises((RuntimeError, ValueError)):
+                        self.invoke(module, decision_store=self.store, decision_timestamp='date')
+                    request.assert_called_once()
+                    save.assert_not_called()
+
+    def test_portfolio_failure_no_save(self):
+        from unittest.mock import patch
+        module = self.modules[1]
+        with patch.object(module, 'build_stock_evidence', return_value=self.data), patch.object(
+            module, 'build_live_portfolio_snapshot', side_effect=RuntimeError('Portfolio failed')
+        ), patch.object(module, 'analyze_investment') as analyze:
+            with self.assertRaises(RuntimeError):
+                self.invoke(module, decision_store=self.store, decision_timestamp='date')
+            analyze.assert_not_called()
+        self.assertEqual(self.store.get_decisions_for_ticker('TEST'), [])
+
+    def test_save_failure_no_repeat(self):
+        import sqlite3
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence', return_value=self.data) as retrieve, patch.object(
+                module, 'analyze_investment', return_value=self.analysis
+            ) as analyze, patch.object(self.store, 'save_decision', side_effect=sqlite3.OperationalError('Write failed')) as save:
+                with self.assertRaises(sqlite3.OperationalError):
+                    self.invoke(module, decision_store=self.store, decision_timestamp='date')
+                retrieve.assert_called_once()
+                analyze.assert_called_once()
+                save.assert_called_once()
+        self.assertEqual(self.store.get_decisions_for_ticker('TEST'), [])
+
+    def test_missing_timestamp_fails_before_research(self):
+        from unittest.mock import patch
+        for module in self.modules:
+            with patch.object(module, 'build_stock_evidence') as retrieve:
+                with self.assertRaisesRegex(ValueError, 'decision_timestamp'):
+                    self.invoke(module, decision_store=self.store)
+                retrieve.assert_not_called()
+
+
 if __name__ == '__main__':
     unittest.main()

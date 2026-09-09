@@ -1,8 +1,9 @@
-"""Decision and outcome builders; no persistence or recommendation evaluation."""
+"""Decision builders and opt-in saving; no recommendation evaluation."""
 from copy import deepcopy
 from dataclasses import fields
 import uuid
 
+from src.decision_store import DecisionStore
 from src.models import DecisionRecord, DecisionOutcome, InvestmentAnalysis
 
 
@@ -60,3 +61,16 @@ def build_decision_outcome(
     if outcome.stock_return is not None and outcome.benchmark_return is not None:
         outcome.excess_return = outcome.stock_return - outcome.benchmark_return
     return outcome
+
+
+def save_analysis_decision(
+    analysis: InvestmentAnalysis,
+    store: DecisionStore,
+    decision_timestamp: str,
+    investment_horizon: str | None = None,
+    decision_id: str | None = None,
+) -> DecisionRecord:
+    """Save an already validated analysis; initialization is the caller's responsibility."""
+    record = build_decision_record(analysis, decision_timestamp, investment_horizon, decision_id)
+    store.save_decision(record)
+    return record

@@ -1,3 +1,5 @@
+from src.decision_history import save_analysis_decision
+from src.decision_store import DecisionStore
 from dataclasses import replace
 from datetime import date
 import logging
@@ -60,5 +62,15 @@ def build_stock_evidence(ticker: str) -> dict:
     return build_evidence_package(snapshot)
 
 
-def run_stock_research(ticker: str) -> InvestmentAnalysis:
-    return analyze_investment(build_stock_evidence(ticker))
+def run_stock_research(
+    ticker: str, *, decision_store: DecisionStore | None = None,
+    decision_timestamp: str | None = None, investment_horizon: str | None = None,
+) -> InvestmentAnalysis:
+    if decision_store is not None and (
+        not isinstance(decision_timestamp, str) or not decision_timestamp.strip()
+    ):
+        raise ValueError("decision_timestamp is required for decision persistence.")
+    result = analyze_investment(build_stock_evidence(ticker))
+    if decision_store is not None:
+        save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
+    return result
