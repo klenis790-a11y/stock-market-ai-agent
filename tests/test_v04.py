@@ -795,6 +795,66 @@ class SynthesisTests(unittest.TestCase):
         self.mock.assert_not_called()
 
 
+    def test_current_risk_and_forecast_instructions(self):
+        self.run_synthesis()
+        instructions = self.mock.call_args.kwargs['instructions']
+        for phrase in ('major_risks contains current identifiable risks/vulnerabilities only',
+                       'not predicted future outcomes', 'expectations in scenarios',
+                       'observations/events in thesis_invalidation_conditions',
+                       'Do not duplicate', 'Ordinary conditional explanations'):
+            self.assertIn(phrase, instructions)
+
+    def test_current_vulnerability_and_forecast_types(self):
+        self.data['major_risks'][0]['text'] = 'Existing leverage may reduce flexibility when cash generation weakens.'
+        self.data['scenarios'][0]['text'] = 'If cash flow declines further, financial flexibility could deteriorate.'
+        item = self.respond(self.data)
+        self.assertIsInstance(item.major_risks[0], InterpretationStatement)
+        self.assertNotIsInstance(item.major_risks[0], ForecastStatement)
+        self.assertIsInstance(item.scenarios[0], ForecastStatement)
+        self.assertIsInstance(item.thesis_invalidation_conditions[0], ForecastStatement)
+
+    def test_statement_type_cannot_override_collection(self):
+        self.data['major_risks'][0]['statement_type'] = 'forecast'
+        with self.assertRaises(ValueError):
+            self.respond(self.data)
+
+    def test_valuation_grounding_instructions(self):
+        self.run_synthesis()
+        instructions = self.mock.call_args.kwargs['instructions']
+        for phrase in ('specific supplied current valuation', 'metrics and values',
+                       'valid current evidence citations', 'do not invent peer comparisons',
+                       'No fixed cheap/expensive', 'valuation is uncertain',
+                       'interpretations, historical memory and portfolio context cannot establish current valuation'):
+            self.assertIn(phrase, instructions)
+
+    def test_quantitative_valuation_preserves_evidence(self):
+        from src.evidence import build_evidence_catalog
+        catalog = build_evidence_catalog(self.evidence)
+        pe = next(e for e in catalog if e['path'].endswith('.pe_ratio'))
+        text = 'The supplied trailing P/E of 20 is an absolute earnings multiple; relative attractiveness is uncertain.'
+        self.data['valuation_assessment'] = text
+        self.data['bear_case'][0] = {'text': text, 'evidence_refs': [pe['evidence_id']]}
+        item = self.respond(self.data)
+        self.assertEqual(item.valuation_assessment, text)
+        self.assertEqual(item.bear_case[0].evidence_refs, [pe['evidence_id']])
+
+    def test_missing_valuation_stays_missing(self):
+        import json
+        from test_v01 import payload
+        self.evidence['retrieved_facts']['stock']['pe_ratio'] = None
+        self.evidence['retrieved_facts']['stock']['forward_pe'] = None
+        self.evidence['missing_data'].append('Valuation multiples unavailable')
+        self.context.specialist_results[0].summary = 'Historical valuation was attractive.'
+        data = payload(self.evidence)
+        data['valuation_assessment'] = 'Valuation is uncertain because current multiples are unavailable.'
+        item = self.respond(data)
+        sent = json.loads(self.mock.call_args.kwargs['input'])
+        self.assertIsNone(sent['evidence_package']['retrieved_facts']['stock']['pe_ratio'])
+        self.assertFalse(any(e['path'].endswith(('.pe_ratio', '.forward_pe')) for e in sent['EVIDENCE_CATALOG']))
+        self.assertIn('Valuation multiples unavailable', item.missing_data)
+        self.assertEqual(item.valuation_assessment, data['valuation_assessment'])
+
+
 class MultiAgentPipelineTests(unittest.TestCase):
     def setUp(self):
         from contextlib import ExitStack
