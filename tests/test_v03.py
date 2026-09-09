@@ -96,5 +96,90 @@ class DecisionModelTests(unittest.TestCase):
             outcome(recommendation='Hold')
 
 
+class DecisionBuilderTests(unittest.TestCase):
+    def setUp(self):
+        from src.models import InvestmentAnalysis
+        from src.decision_history import build_decision_record
+        self.build = build_decision_record
+        source = record()
+        self.analysis = InvestmentAnalysis(**{
+            f.name: getattr(source, f.name) for f in fields(InvestmentAnalysis)
+        })
+        for name in ('bull_case', 'bear_case', 'supporting_evidence', 'major_risks'):
+            setattr(self.analysis, name, [InterpretationStatement(name, ['E001'])])
+        for name in ('scenarios', 'thesis_invalidation_conditions'):
+            setattr(self.analysis, name, [ForecastStatement(name, ['E001'])])
+        self.analysis.missing_data = ['Fixture limitation']
+
+    def test_all_fields_map(self):
+        from src.models import InvestmentAnalysis
+        result = self.build(self.analysis, '20260908T201500Z', '12 months', 'fixture')
+        self.assertIsInstance(result, DecisionRecord)
+        for field in fields(InvestmentAnalysis):
+            self.assertEqual(getattr(result, field.name), getattr(self.analysis, field.name))
+        self.assertEqual(result.decision_timestamp, '20260908T201500Z')
+        self.assertEqual(result.investment_horizon, '12 months')
+
+    def test_portfolio_assessment(self):
+        for value in ('Portfolio context', None):
+            self.analysis.portfolio_assessment = value
+            self.assertEqual(self.build(self.analysis, 'timestamp').portfolio_assessment, value)
+
+    def test_custom_id(self):
+        self.assertEqual(self.build(self.analysis, 'timestamp', decision_id=' custom ').decision_id, 'custom')
+        for value in ('', ' ', 123):
+            with self.assertRaises(ValueError):
+                self.build(self.analysis, 'timestamp', decision_id=value)
+
+    def test_generated_id_format_and_unique(self):
+        self.analysis.ticker = ' test '
+        first = self.build(self.analysis, '20260908T201500Z')
+        second = self.build(self.analysis, '20260908T201500Z')
+        self.assertRegex(first.decision_id, r'^TEST-20260908T201500Z-[0-9a-f]{8}$')
+        self.assertNotEqual(first.decision_id, second.decision_id)
+        self.assertEqual(first.ticker, 'TEST')
+
+    def test_optional_horizon(self):
+        for supplied, expected in [(None, None), (' ', None), (' 3 months ', '3 months'),
+                                   ('long term', 'long term')]:
+            self.assertEqual(self.build(self.analysis, 'timestamp', supplied).investment_horizon, expected)
+
+    def test_timestamp_not_reinterpreted(self):
+        timestamp = ' 2026-09-08T10:00:00-04:00 '
+        self.assertEqual(self.build(self.analysis, timestamp).decision_timestamp, timestamp)
+        for value in ('', ' ', None):
+            with self.assertRaises(ValueError):
+                self.build(self.analysis, value)
+
+    def test_deep_mutable_isolation(self):
+        from copy import deepcopy
+        before = deepcopy(self.analysis)
+        result = self.build(self.analysis, 'timestamp')
+        self.assertEqual(self.analysis, before)
+        for name in ('bull_case', 'bear_case', 'supporting_evidence', 'major_risks',
+                     'scenarios', 'thesis_invalidation_conditions'):
+            original = getattr(self.analysis, name)
+            copied = getattr(result, name)
+            self.assertIsNot(original, copied)
+            self.assertIsNot(original[0], copied[0])
+            original[0].evidence_refs.append('E002')
+            original[0].text = 'Changed'
+            self.assertEqual(copied, getattr(before, name))
+        self.analysis.missing_data.append('New')
+        self.analysis.material_evidence_review['E001'].observation = 'Changed'
+        self.analysis.material_evidence_review['E002'] = MaterialEvidenceReview('New', 'New')
+        self.assertEqual(result.missing_data, before.missing_data)
+        self.assertEqual(result.material_evidence_review, before.material_evidence_review)
+        result.material_evidence_review['E001'].thesis_relevance = 'Record-only change'
+        self.assertEqual(self.analysis.material_evidence_review['E001'].thesis_relevance, 'Relevance')
+
+    def test_decision_only_signature(self):
+        import inspect
+        self.assertEqual(list(inspect.signature(self.build).parameters),
+                         ['analysis', 'decision_timestamp', 'investment_horizon', 'decision_id'])
+        with self.assertRaises(TypeError):
+            self.build(self.analysis, 'timestamp', stock_end_price=100)
+
+
 if __name__ == '__main__':
     unittest.main()
