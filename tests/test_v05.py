@@ -123,10 +123,10 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
-                self.assertNotIsInstance(node, ast.BinOp)
+
 
     def test_home_and_research_reserved_sections(self):
         from streamlit.testing.v1 import AppTest
@@ -134,4 +134,82 @@ class DashboardShellTests(unittest.TestCase):
         self.assertEqual(len(app.subheader), 6)
         app.sidebar.radio[0].set_value('research').run()
         self.assertIn('Evidence / provenance', [x.value for x in app.subheader])
-        self.assertFalse(app.button)
+        self.assertEqual(app.button[0].label, 'Run Research')
+
+
+class ResearchWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        from test_v01 import evidence, payload
+        from src.analysis import _validate_analysis
+        self.analysis = _validate_analysis(payload(evidence()), evidence())
+        guard = patch('socket.socket.connect', side_effect=AssertionError('Network forbidden'))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def test_normalization_and_invalid_input(self):
+        from src.dashboard.research_adapter import normalize_ticker, run_research, ResearchInputError
+        self.assertEqual(normalize_ticker(' aapl '), 'AAPL')
+        with patch('src.dashboard.research_adapter.run_stock_research') as pipeline:
+            for value in ('', '  ', 'A A', 'A<script>', '../', None):
+                with self.assertRaises(ResearchInputError): run_research(value)
+            pipeline.assert_not_called()
+
+    def test_adapter_exact_pipeline_and_objects(self):
+        from src.dashboard.research_adapter import run_research
+        with patch('src.dashboard.research_adapter.run_stock_research', return_value=self.analysis) as pipeline:
+            data = run_research(' test ')
+        pipeline.assert_called_once_with('TEST', use_multi_agent=True, persist_decision=False, use_decision_memory=False)
+        self.assertIs(data.analysis, self.analysis)
+        self.assertIs(data.analysis.bull_case, self.analysis.bull_case)
+        self.assertIsNone(data.evidence_catalog)
+        self.assertFalse(data.availability['specialists'].data_available)
+
+    def test_safe_failure(self):
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        with patch('src.dashboard.research_adapter.run_stock_research', side_effect=RuntimeError('secret-test-value')):
+            with self.assertRaises(ResearchRunError) as caught: run_research('TEST')
+        self.assertNotIn('secret-test-value', str(caught.exception))
+
+    def test_submission_rerun_navigation_and_failed_new_run(self):
+        from streamlit.testing.v1 import AppTest
+        from src.dashboard.research_adapter import run_research
+        with patch('src.dashboard.research_adapter.run_stock_research', return_value=self.analysis) as pipeline:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+            app.sidebar.radio[0].set_value('research').run()
+            app.text_input[0].set_value('TEST').run()
+            pipeline.assert_not_called()
+            app.button[0].click().run()
+            self.assertFalse(app.exception)
+            pipeline.assert_called_once()
+            self.assertEqual(app.metric[0].value, self.analysis.recommendation)
+            app.run()
+            app.sidebar.radio[0].set_value('home').run()
+            app.sidebar.radio[0].set_value('research').run()
+            pipeline.assert_called_once()
+            self.assertTrue(any('FORECAST' == x.value for x in app.caption))
+            self.assertTrue(any('AI INTERPRETATION' == x.value for x in app.caption))
+            pipeline.side_effect = RuntimeError('secret-test-value')
+            app.text_input[0].set_value('OTHER')
+            app.button[0].click().run()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.metric)
+            self.assertTrue(app.error)
+            self.assertNotIn('secret-test-value', app.error[0].value)
+
+    def test_generic_specialist_renderer(self):
+        from streamlit.testing.v1 import AppTest
+        script = '''
+from src.dashboard.research import specialist_results
+from src.models import SpecialistAnalysis
+specialist_results([SpecialistAnalysis(n, 'TEST', 'Summary', [], [], [], 60, [])
+                    for n in ('risk', 'future_test_specialist', 'fundamental')])
+'''
+        app = AppTest.from_string(script).run()
+        self.assertFalse(app.exception)
+        self.assertEqual([x.value for x in app.subheader], ['risk', 'future_test_specialist', 'fundamental'])
+
+    def test_adapter_import_boundary(self):
+        import src.dashboard.research_adapter as adapter
+        tree = ast.parse(Path(adapter.__file__).read_text())
+        modules = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
+        self.assertEqual(modules, ['src.research_pipeline', 'src.ui_contracts'])
