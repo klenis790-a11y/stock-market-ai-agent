@@ -71,9 +71,13 @@ def display_result(data):
 
 def render():
     header('Research', 'Run standalone multi-agent research and inspect its evidence-grounded synthesis.')
-    with st.form('research_input'):
-        ticker = st.text_input('Ticker', placeholder='AAPL')
-        submitted = st.form_submit_button('Run Research')
+    with st.form('research_input', border=True):
+        st.subheader('Run company research')
+        ticker_column, action_column = st.columns([4, 1], vertical_alignment='bottom')
+        with ticker_column:
+            ticker = st.text_input('Ticker', placeholder='AAPL', key='research_ticker')
+        with action_column:
+            submitted = st.form_submit_button('Run Research', type='primary')
     if submitted:
         st.session_state.pop('research_result', None)
         st.session_state.pop('research_error', None)
