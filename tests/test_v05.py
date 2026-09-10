@@ -128,7 +128,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 
@@ -644,3 +644,147 @@ class AgentRoomTests(unittest.TestCase):
         self.assertIn('No entries supplied.', [x.value for x in app.expander[0].caption])
         self.assertTrue(any('No missing data reported' in x.value for x in app.caption))
         self.assertTrue(any('references only' in x.value for x in app.caption))
+
+
+class HistoryDashboardTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from src.decision_store import DecisionStore
+        from test_v03 import record, outcome
+        ResearchWorkspaceTests.setUp(self)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / 'history.db'
+        self.store = DecisionStore(str(self.path))
+        self.store.initialize()
+        self.old = record(decision_id='old', ticker='AAPL', decision_timestamp='2026-01-01')
+        self.new = record(decision_id='new', ticker='AAPL', decision_timestamp='2026-02-01',
+                          recommendation='Accumulate', confidence_score=67.5,
+                          reasoning_summary='Preserved original thesis', portfolio_assessment='Stored portfolio assessment',
+                          bear_case=[InterpretationStatement('Historical bear', ['E010'])],
+                          major_risks=[InterpretationStatement('Historical risk', ['E011'])],
+                          thesis_invalidation_conditions=[ForecastStatement('Original invalidation condition', ['E012'])],
+                          missing_data=['Historical missing evidence'])
+        for item in (self.old, self.new, record(decision_id='other', ticker='MSFT')):
+            self.store.save_decision(item)
+        self.outcome = outcome(decision_id='new', evaluation_timestamp='2027-02-01',
+                               evaluation_horizon='1 year', stock_return=-0.1,
+                               benchmark_ticker='VOO', benchmark_start_price=50,
+                               benchmark_end_price=55, benchmark_return=0.1, excess_return=-0.2)
+        self.store.save_outcome(self.outcome)
+        self.before = self.path.read_bytes()
+        self.guards = []
+        for target in ('src.dashboard.research_adapter.run_stock_research',
+                       'src.research_pipeline.run_stock_research',
+                       'src.alpha_vantage_client._request', 'src.openai_client.request_text',
+                       'src.decision_memory.build_decision_memory_context',
+                       'src.decision_store.DecisionStore.initialize',
+                       'src.decision_store.DecisionStore.save_decision',
+                       'src.decision_store.DecisionStore.save_outcome'):
+            guard = patch(target, side_effect=AssertionError('History must only read'))
+            self.guards.append(guard.start())
+            self.addCleanup(guard.stop)
+
+    def tearDown(self):
+        for guard in self.guards:
+            guard.assert_not_called()
+
+    def test_missing_empty_invalid_and_unknown_selection(self):
+        from src.dashboard.history_adapter import load_history, select_decision, HistoryReadError
+        missing = self.path.parent / 'absent.db'
+        data = load_history(str(missing), 'AAPL')
+        self.assertFalse(data.availability['history'].data_available)
+        self.assertFalse(missing.exists())
+        self.assertEqual(load_history(str(self.path), 'NONE').decisions, [])
+        for path, ticker in (('', 'AAPL'), (str(self.path), '  ')):
+            with self.assertRaises(HistoryReadError):
+                load_history(path, ticker)
+        self.assertIsNone(select_decision(load_history(str(self.path), 'AAPL'), 'unknown'))
+
+    def test_records_order_filter_outcomes_and_read_only(self):
+        from src.dashboard.history_adapter import load_history, select_decision
+        from src.decision_store import DecisionStore
+        with patch('src.dashboard.history_adapter.DecisionStore', wraps=DecisionStore) as factory:
+            data = load_history(str(self.path), ' aapl ')
+        factory.assert_called_once_with(str(self.path), read_only=True)
+        self.assertEqual(data.decisions, [self.new, self.old])
+        self.assertEqual(select_decision(data, 'new'), self.new)
+        self.assertEqual(data.outcomes, [self.outcome])
+        self.assertIsNone(data.memory_context)
+        self.assertEqual(self.store.get_decision('new'), self.new)
+        self.assertEqual(self.path.read_bytes(), self.before)
+        self.assertEqual({p.name for p in self.path.parent.iterdir()}, {'history.db'})
+
+    def test_corrupt_and_unreadable_database_sanitized(self):
+        import sqlite3
+        from src.dashboard.history_adapter import load_history, HistoryReadError
+        corrupt = self.path.parent / 'corrupt.db'
+        corrupt.write_text('sensitive database content')
+        with self.assertRaises(HistoryReadError) as caught:
+            load_history(str(corrupt), 'AAPL')
+        self.assertNotIn('sensitive', str(caught.exception))
+        with patch('src.dashboard.history_adapter.DecisionStore.get_decisions_for_ticker',
+                   side_effect=sqlite3.OperationalError('secret permission detail')):
+            with self.assertRaises(HistoryReadError) as caught:
+                load_history(str(self.path), 'AAPL')
+        self.assertNotIn('secret', str(caught.exception))
+        # Corrupt a separate fixture so the original history remains intact.
+        corrupt.write_bytes(self.before)
+        with sqlite3.connect(corrupt) as connection:
+            connection.execute('UPDATE decisions SET bull_case = ? WHERE decision_id = ?',
+                               ('secret invalid JSON', 'new'))
+        with self.assertRaises(HistoryReadError) as caught:
+            load_history(str(corrupt), 'AAPL')
+        self.assertNotIn('secret', str(caught.exception))
+
+    def test_page_selection_temporal_gaps_and_no_mutation(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+        app.session_state['research_result'] = ui.ResearchPageData(analysis=self.analysis,
+                                                                  evidence_catalog=[{'current': 'NEVER USE CURRENT DATA'}])
+        app.sidebar.radio[0].set_value('decision_history').run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.dataframe)
+        app.text_input[0].set_value(str(self.path))
+        app.text_input[1].set_value(' aapl ')
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.dataframe[0].value['Decision ID'].tolist(), ['new', 'old'])
+        self.assertEqual(app.metric[0].value, 'Accumulate')
+        self.assertEqual(app.metric[1].value, '67.5/100')
+        text = [x.value for x in app.markdown]
+        self.assertIn('Decision made: 2026-02-01', text)
+        self.assertIn('Evaluation timestamp: 2027-02-01', text)
+        self.assertIn(self.new.reasoning_summary, text)
+        self.assertIn(self.new.portfolio_assessment, text)
+        self.assertIn('Historical risk', text)
+        self.assertIn('Original invalidation condition', text)
+        self.assertTrue(any('Not preserved in this historical record' in x.value for x in app.info))
+        self.assertFalse(any('NEVER USE CURRENT DATA' in x for x in text))
+        outcome_rows = app.table[0].value
+        self.assertEqual(outcome_rows.loc[outcome_rows['Stored outcome field'] == 'stock return', 'Value'].iloc[0], '-0.1')
+        self.assertIn('Later outcomes · separate observations', [x.value for x in app.subheader])
+        app.selectbox[0].select('old').run()
+        self.assertEqual(app.metric[0].value, self.old.recommendation)
+        self.assertIn('No stored outcomes for this decision.', [x.value for x in app.info])
+        app.run()
+        app.sidebar.radio[0].set_value('home').run()
+        app.sidebar.radio[0].set_value('decision_history').run()
+        self.assertEqual(app.selectbox[0].value, 'old')
+        self.assertEqual(self.path.read_bytes(), self.before)
+        self.assertEqual(self.store.get_decision('new'), self.new)
+        self.assertEqual(self.store.get_outcomes_for_decision('new'), [self.outcome])
+
+    def test_new_source_failure_clears_old_display(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+        app.session_state['history_query'] = (str(self.path), 'AAPL')
+        app.sidebar.radio[0].set_value('decision_history').run()
+        self.assertTrue(app.metric)
+        app.text_input[0].set_value(str(self.path.parent / 'missing.db'))
+        app.text_input[1].set_value('MSFT')
+        app.button[0].click().run()
+        self.assertFalse(app.metric)
+        self.assertFalse(app.exception)
+        self.assertIn('No database was created', app.info[0].value)
+        self.assertEqual(self.path.read_bytes(), self.before)
