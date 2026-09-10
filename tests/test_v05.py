@@ -128,7 +128,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 
@@ -166,7 +166,10 @@ class ResearchWorkspaceTests(unittest.TestCase):
         from src.dashboard.research_adapter import run_research
         with patch('src.dashboard.research_adapter.run_stock_research', return_value=self.analysis) as pipeline:
             data = run_research(' test ')
-        pipeline.assert_called_once_with('TEST', use_multi_agent=True, persist_decision=False, use_decision_memory=False)
+        from unittest.mock import ANY
+        pipeline.assert_called_once_with('TEST', use_multi_agent=True, persist_decision=False,
+                                        use_decision_memory=False, on_specialists_complete=ANY)
+        self.assertTrue(callable(pipeline.call_args.kwargs['on_specialists_complete']))
         self.assertIs(data.analysis, self.analysis)
         self.assertIs(data.analysis.bull_case, self.analysis.bull_case)
         self.assertIsNone(data.evidence_catalog)
@@ -242,7 +245,9 @@ specialist_results([SpecialistAnalysis(n, 'TEST', 'Summary', [], [], [], 60, [])
             app.text_input[0].set_value(' test ').run()
             pipeline.assert_not_called()
             app.button[0].click().run()
-            pipeline.assert_called_once_with('TEST', use_multi_agent=True, persist_decision=False, use_decision_memory=False)
+            from unittest.mock import ANY
+            pipeline.assert_called_once_with('TEST', use_multi_agent=True, persist_decision=False,
+                                            use_decision_memory=False, on_specialists_complete=ANY)
             app.run()
             pipeline.assert_called_once()
             self.assertEqual(app.text_input[0].label, 'Ticker')
@@ -403,3 +408,239 @@ class PortfolioWorkspaceTests(unittest.TestCase):
             app.sidebar.radio[0].set_value('portfolio').run()
             loader.assert_called_once()
             self.assertEqual(app.metric[0].value, '130.00')
+
+
+class SameRunCaptureTests(unittest.TestCase):
+    setUp = ResearchWorkspaceTests.setUp
+
+    def test_adapter_captures_ordered_same_run_without_persistence(self):
+        from test_v04 import result
+        from src.dashboard.research_adapter import run_research
+        items = [result(specialist_name='risk'), result(),
+                 result(specialist_name='future_test_specialist')]
+        def execute(ticker, **options):
+            self.assertEqual(ticker, 'TEST')
+            self.assertTrue(options['use_multi_agent'])
+            self.assertFalse(options['persist_decision'])
+            self.assertFalse(options['use_decision_memory'])
+            self.assertNotIn('decision_store', options)
+            options['on_specialists_complete'](items)
+            return self.analysis
+        with patch('src.dashboard.research_adapter.run_stock_research', side_effect=execute) as pipeline:
+            data = run_research(' test ')
+        pipeline.assert_called_once()
+        self.assertIs(data.analysis, self.analysis)
+        self.assertEqual(data.specialist_results, items)
+        self.assertIsNot(data.specialist_results, items)
+        self.assertFalse(data.portfolio_context_supplied)
+        self.assertFalse(data.memory_context_supplied)
+        self.assertTrue(data.availability['specialists'].data_available)
+
+    def test_session_replacement_failure_and_navigation(self):
+        from dataclasses import replace
+        from test_v04 import result
+        from streamlit.testing.v1 import AppTest
+        calls = []
+        def execute(ticker, **options):
+            calls.append(ticker)
+            options['on_specialists_complete']([
+                result(ticker=ticker, summary='Same-run ' + ticker),
+                result(ticker=ticker, specialist_name='risk'),
+            ])
+            if ticker == 'FAIL':
+                raise ValueError('Synthesis failed')
+            return replace(self.analysis, ticker=ticker)
+        with patch('src.dashboard.research_adapter.run_stock_research', side_effect=execute):
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+            app.sidebar.radio[0].set_value('research').run()
+            self.assertEqual(calls, [])
+            for ticker in ('FIRST', 'SECOND'):
+                app.text_input[0].set_value(ticker)
+                app.button[0].click().run()
+                self.assertFalse(app.exception)
+                data = app.session_state['research_result']
+                self.assertEqual(data.analysis.ticker, ticker)
+                self.assertEqual([x.ticker for x in data.specialist_results], [ticker, ticker])
+                self.assertFalse(data.portfolio_context_supplied)
+                self.assertFalse(data.memory_context_supplied)
+            self.assertEqual(calls, ['FIRST', 'SECOND'])
+            app.run()
+            app.sidebar.radio[0].set_value('agent_room').run()
+            app.sidebar.radio[0].set_value('research').run()
+            self.assertEqual(calls, ['FIRST', 'SECOND'])
+            self.assertEqual(app.session_state['research_result'].analysis.ticker, 'SECOND')
+            app.text_input[0].set_value('FAIL')
+            app.button[0].click().run()
+            self.assertFalse(app.exception)
+            self.assertTrue(app.error)
+            self.assertNotIn('research_result', app.session_state)
+            self.assertFalse(app.metric)
+            app.run()
+            self.assertEqual(calls, ['FIRST', 'SECOND', 'FAIL'])
+
+    def test_real_pipeline_capture_adapter_boundary(self):
+        from test_v04 import result
+        from src.models import MultiAgentSynthesisContext
+        from src.dashboard.research_adapter import run_research
+        items = [result(), result(specialist_name='risk')]
+        with patch('src.research_pipeline.build_stock_evidence', return_value={'ticker': 'TEST'}), \
+                patch('src.research_pipeline.run_specialists', return_value=MultiAgentSynthesisContext('TEST', items)) as specialists, \
+                patch('src.research_pipeline.synthesize_investment_analysis', return_value=self.analysis) as synthesis, \
+                patch('src.research_pipeline.save_analysis_decision') as save, \
+                patch('src.research_pipeline.build_decision_memory_context') as memory:
+            data = run_research('TEST')
+        self.assertEqual(data.specialist_results, items)
+        self.assertIs(data.analysis, self.analysis)
+        specialists.assert_called_once()
+        synthesis.assert_called_once()
+        save.assert_not_called()
+        memory.assert_not_called()
+
+
+class AgentRoomTests(unittest.TestCase):
+    def setUp(self):
+        ResearchWorkspaceTests.setUp(self)
+        self.guards = []
+        for target in (
+            'src.dashboard.research_adapter.run_stock_research',
+            'src.research_pipeline.run_stock_research',
+            'src.research_pipeline.build_stock_evidence',
+            'src.research_pipeline.run_specialists',
+            'src.research_pipeline.synthesize_investment_analysis',
+            'src.fundamental_analysis.request_text',
+            'src.risk_analysis.request_text', 'src.synthesis.request_text',
+            'src.openai_client.request_text',
+            'src.alpha_vantage_client.get_company_overview',
+            'src.decision_store.DecisionStore.save_decision',
+            'src.decision_store.DecisionStore.get_decisions_for_ticker',
+        ):
+            guard = patch(target, side_effect=AssertionError('Agent Room must be read-only'))
+            self.guards.append(guard.start())
+            self.addCleanup(guard.stop)
+
+    def tearDown(self):
+        for guard in self.guards:
+            guard.assert_not_called()
+
+    def app(self, data=None):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+        if data is not None:
+            app.session_state['research_result'] = data
+        app.sidebar.radio[0].set_value('agent_room').run()
+        self.assertFalse(app.exception)
+        return app
+
+    def data(self, ticker='AAPL', **flags):
+        from dataclasses import replace
+        from test_v04 import result
+        return ui.ResearchPageData(
+            analysis=replace(self.analysis, ticker=ticker, confidence_score=63),
+            specialist_results=[
+                result(ticker=ticker, specialist_name=name, summary=ticker + ' ' + name,
+                       confidence_score=score,
+                       key_findings=[InterpretationStatement('Current finding ' + name, ['E338', 'E339'])],
+                       risks=[InterpretationStatement('Current vulnerability ' + name, ['E340'])],
+                       scenarios=[ForecastStatement('Future scenario ' + name, ['E338'])],
+                       missing_data=['Missing input ' + name])
+                for name, score in [('risk', 70), ('future_test_specialist', 41), ('fundamental', 82)]
+            ], **flags)
+
+    def test_empty_and_missing_specialist_capture(self):
+        app = self.app()
+        self.assertEqual(app.info[0].value, 'No multi-agent research run is available in this session.')
+        self.assertIn('Run a company analysis from Research first.', [x.value for x in app.markdown])
+        self.assertFalse(app.metric)
+        app.session_state['research_result'] = ui.ResearchPageData(analysis=self.analysis)
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.metric)
+        self.assertEqual(app.info[0].value, 'No multi-agent research run is available in this session.')
+
+    def test_generic_order_details_provenance_and_synthesis(self):
+        from copy import deepcopy
+        data = self.data()
+        original = deepcopy(data)
+        app = self.app(data)
+        names = [x.specialist_name for x in data.specialist_results]
+        headings = [x.value for x in app.subheader]
+        self.assertEqual([x for x in headings if x in names], names)
+        self.assertIn('AAPL', headings)
+        self.assertIn('Portfolio Manager / Final Synthesis', headings)
+        self.assertEqual(app.metric[0].value, data.analysis.recommendation)
+        self.assertEqual(app.metric[1].value, '63/100')
+        self.assertEqual([x.value for x in app.metric if x.label == 'Specialist confidence'],
+                         ['70/100', '41/100', '82/100'])
+        self.assertEqual([x.value for x in app.metric if x.label == 'Final synthesis confidence'],
+                         ['63/100', '63/100'])
+        text = [x.value for x in app.markdown]
+        captions = [x.value for x in app.caption]
+        for item in data.specialist_results:
+            self.assertIn(item.summary, text)
+            for statement in item.key_findings + item.risks + item.scenarios:
+                self.assertIn(statement.text, text)
+                self.assertIn('Evidence references: ' + ', '.join(statement.evidence_refs), captions)
+            self.assertIn(item.missing_data[0], [x.value for x in app.warning])
+        details = app.expander[0]
+        self.assertIn('FORECAST', [x.value for x in details.caption])
+        self.assertEqual([x.value for x in details.caption if x.value in ('AI INTERPRETATION', 'FORECAST')],
+                         ['AI INTERPRETATION', 'AI INTERPRETATION', 'FORECAST'])
+        self.assertIn(data.analysis.reasoning_summary, text)
+        for items in (data.analysis.bull_case, data.analysis.bear_case,
+                      data.analysis.major_risks, data.analysis.thesis_invalidation_conditions):
+            for item in items:
+                self.assertIn(item.text, text)
+        labels = [x.label for x in app.expander]
+        for title in ('Bull case', 'Bear case', 'Major risks · current vulnerabilities',
+                      'Thesis invalidation · future observations'):
+            self.assertIn(title, labels)
+        self.assertTrue(any('catalog resolution is unavailable' in x for x in captions))
+        self.assertFalse(app.get('chat_message'))
+        self.assertFalse(app.button)
+        self.assertEqual(data, original)
+
+    def test_context_flags_only_from_same_run(self):
+        app = self.app(self.data())
+        # Unrelated page state must never supply provenance for this run.
+        app.session_state['portfolio_result'] = 'unrelated portfolio'
+        app.run()
+        self.assertIn('Portfolio context: Not supplied', [x.value for x in app.caption])
+        self.assertIn('Historical memory: Not supplied', [x.value for x in app.caption])
+        app.session_state['research_result'] = self.data(portfolio_context_supplied=True,
+                                                       memory_context_supplied=True)
+        app.run()
+        self.assertIn('Portfolio context: Supplied', [x.value for x in app.caption])
+        self.assertIn('Historical memory: Supplied', [x.value for x in app.caption])
+
+    def test_session_replacement_navigation_and_reruns(self):
+        app = self.app(self.data('AAPL'))
+        app.run()
+        app.sidebar.radio[0].set_value('home').run()
+        app.sidebar.radio[0].set_value('agent_room').run()
+        self.assertIn('AAPL', [x.value for x in app.subheader])
+        app.session_state['research_result'] = self.data('NVDA')
+        app.run()
+        self.assertFalse(app.exception)
+        self.assertIn('NVDA', [x.value for x in app.subheader])
+        self.assertNotIn('AAPL', [x.value for x in app.subheader])
+        self.assertFalse(any('AAPL' in x.value for x in app.markdown))
+        del app.session_state['research_result']
+        app.run()
+        self.assertFalse(app.metric)
+        self.assertIn('No multi-agent research run', app.info[0].value)
+
+    def test_empty_details_and_catalog_presence_are_honest(self):
+        data = self.data()
+        item = data.specialist_results[0]
+        item.key_findings = []
+        item.risks = []
+        item.scenarios = []
+        item.missing_data = []
+        data.specialist_results = [item]
+        data.evidence_catalog = []
+        app = self.app(data)
+        self.assertFalse(app.exception)
+        self.assertFalse(app.warning)
+        self.assertIn('No entries supplied.', [x.value for x in app.expander[0].caption])
+        self.assertTrue(any('No missing data reported' in x.value for x in app.caption))
+        self.assertTrue(any('references only' in x.value for x in app.caption))
