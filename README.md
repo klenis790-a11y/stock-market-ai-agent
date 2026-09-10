@@ -30,7 +30,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Reuse an existing configured environment. The only direct third-party runtime dependency is the official OpenAI SDK, pinned in `requirements.txt`; pip resolves its required dependencies. Financial requests and tests use the standard library.
+Reuse an existing configured environment. Direct third-party runtime dependencies are the official OpenAI SDK and Streamlit, pinned in `requirements.txt`; pip resolves their required dependencies. Financial requests and tests use the standard library.
 
 Configure these environment variables privately:
 
@@ -203,3 +203,18 @@ keep them private and out of Git. Prompt boundaries and structural validation do
 prove semantic correctness; human review remains necessary. The Step 10B live recheck
 validated with one prior decision, no additional saved decision, zero outcomes, and Hold
 at 62/100; this single run is not evidence of general investment accuracy.
+
+## V0.5 dashboard shell
+
+Install the pinned dependencies with `.venv/bin/python -m pip install -r requirements.txt`.
+From the repository root, launch:
+
+```sh
+.venv/bin/python -m streamlit run dashboard.py
+```
+
+The persistent sidebar provides Home, Research, Portfolio, Agent Room, Decision
+History and Performance. This step provides structural empty states only: no
+research execution, database access or fabricated financial data. No credentials
+are required to browse the shell. Performance remains unavailable. The CLI and
+investment engine are unchanged. UI tests use Streamlit AppTest without a browser.
