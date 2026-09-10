@@ -128,7 +128,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 
@@ -341,3 +341,65 @@ class EnvironmentBootstrapTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as error: load_local_environment(path)
             self.assertNotIn('private-fixture', str(error.exception))
             self.assertNotIn('OPENAI_API_KEY', os.environ)
+
+
+class PortfolioWorkspaceTests(unittest.TestCase):
+    def setUp(self):
+        from src.models import PortfolioInput, PortfolioPositionInput
+        from src.portfolio_calculations import build_portfolio_snapshot
+        from src.portfolio_risk import assess_portfolio_risk
+        self.snapshot = build_portfolio_snapshot(PortfolioInput([PortfolioPositionInput('TEST', 2, 10)], 100), {'TEST': 15})
+        self.risk = assess_portfolio_risk(self.snapshot)
+        for target in ('socket.socket.connect', 'src.research_pipeline.run_stock_research',
+                       'src.openai_client.request_text', 'src.decision_store.DecisionStore.save_decision'):
+            guard = patch(target, side_effect=AssertionError('Unexpected side effect'))
+            guard.start()
+            self.addCleanup(guard.stop)
+
+    def test_mapping_without_recalculation(self):
+        from dataclasses import asdict
+        from src.dashboard.portfolio_adapter import portfolio_page_data, position_rows
+        data = portfolio_page_data(self.snapshot, self.risk)
+        self.assertIs(data.snapshot, self.snapshot)
+        self.assertIs(data.risk_assessment, self.risk)
+        self.assertEqual(position_rows(data), [asdict(self.snapshot.positions[0])])
+        self.assertEqual(data.snapshot.total_portfolio_value, 130)
+
+    def test_explicit_loader_and_invalid_inputs(self):
+        from src.dashboard.portfolio_adapter import load_portfolio, PortfolioLoadError
+        with patch('src.dashboard.portfolio_adapter.build_live_portfolio_snapshot', return_value=self.snapshot) as loader:
+            data = load_portfolio(' test:2:10 ', 100)
+            loader.assert_called_once()
+            self.assertEqual(data.snapshot, self.snapshot)
+            loader.reset_mock()
+            for value, cash in [(':2:10', 0), ('TEST:abc:10', 0), ('TEST:2:10,TEST:1:2', 0), ('', -1)]:
+                with self.assertRaises(PortfolioLoadError): load_portfolio(value, cash)
+            loader.assert_not_called()
+
+    def test_empty_and_missing_price(self):
+        from src.dashboard.portfolio_adapter import load_portfolio
+        with patch('src.portfolio_data.get_portfolio_prices', return_value={}):
+            empty = load_portfolio('', 100)
+            missing = load_portfolio('TEST:2:10', 100)
+        self.assertEqual(empty.snapshot.positions, [])
+        self.assertEqual(empty.snapshot.total_portfolio_value, 100)
+        self.assertIsNone(missing.snapshot.total_portfolio_value)
+        self.assertFalse(missing.risk_assessment.concentration_policy_evaluable)
+
+    def test_form_session_and_rendering(self):
+        from streamlit.testing.v1 import AppTest
+        with patch('src.configuration.load_local_environment'), patch('src.dashboard.portfolio_adapter.build_live_portfolio_snapshot', return_value=self.snapshot) as loader:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py'), default_timeout=30).run()
+            app.sidebar.radio[0].set_value('portfolio').run()
+            app.text_area[0].set_value('TEST:2:10').run()
+            loader.assert_not_called()
+            app.button[0].click().run()
+            self.assertFalse(app.exception)
+            loader.assert_called_once()
+            self.assertEqual(app.metric[0].value, '130.00')
+            self.assertTrue(app.dataframe)
+            app.run()
+            app.sidebar.radio[0].set_value('home').run()
+            app.sidebar.radio[0].set_value('portfolio').run()
+            loader.assert_called_once()
+            self.assertEqual(app.metric[0].value, '130.00')
