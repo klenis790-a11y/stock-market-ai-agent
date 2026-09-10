@@ -213,3 +213,68 @@ specialist_results([SpecialistAnalysis(n, 'TEST', 'Summary', [], [], [], 60, [])
         tree = ast.parse(Path(adapter.__file__).read_text())
         modules = [n.module for n in ast.walk(tree) if isinstance(n, ast.ImportFrom)]
         self.assertEqual(modules, ['src.research_pipeline', 'src.ui_contracts'])
+
+
+    def test_execution_controls_visible_with_retained_result(self):
+        from streamlit.testing.v1 import AppTest
+        from src.dashboard.research_adapter import run_research
+        with patch('src.dashboard.research_adapter.run_stock_research', return_value=self.analysis) as pipeline:
+            retained = run_research('TEST')
+            pipeline.reset_mock()
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py'))
+            app.session_state['research_result'] = retained
+            app.run()
+            app.sidebar.radio[0].set_value('research').run()
+            self.assertFalse(app.exception)
+            self.assertEqual(app.text_input[0].label, 'Ticker')
+            self.assertEqual(app.button[0].label, 'Run Research')
+            self.assertEqual(app.subheader[0].value, 'Run company research')
+            self.assertEqual(app.metric[0].value, self.analysis.recommendation)
+            pipeline.assert_not_called()
+            app.text_input[0].set_value(' test ').run()
+            pipeline.assert_not_called()
+            app.button[0].click().run()
+            pipeline.assert_called_once_with('TEST', use_multi_agent=True, persist_decision=False, use_decision_memory=False)
+            app.run()
+            pipeline.assert_called_once()
+            self.assertEqual(app.text_input[0].label, 'Ticker')
+            self.assertEqual(app.button[0].label, 'Run Research')
+
+
+class ResearchDiagnosticTests(unittest.TestCase):
+    def test_safe_internal_log_and_ui_error(self):
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        with patch('src.dashboard.research_adapter.run_stock_research', side_effect=RuntimeError('OpenAI connection failed or timed out.')) as pipeline:
+            with self.assertLogs('src.dashboard.research_adapter', level='ERROR') as logs:
+                with self.assertRaises(ResearchRunError) as caught:
+                    run_research('AAPL')
+            pipeline.assert_called_once()
+        self.assertIn('exception=RuntimeError', logs.output[0])
+        self.assertIn('OpenAI connection failed or timed out.', logs.output[0])
+        self.assertNotIn('OpenAI connection', str(caught.exception))
+
+    def test_secret_and_payload_withheld(self):
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        secret = 'private-fixture-key'
+        for message in (secret + ' raw transcript entire payload',
+                        'Alpha Vantage Information: ' + secret + ' raw payload'):
+            with patch.dict('os.environ', {'ALPHA_VANTAGE_API_KEY': secret}), patch(
+                'src.dashboard.research_adapter.run_stock_research', side_effect=ValueError(message)) as pipeline:
+                with self.assertLogs('src.dashboard.research_adapter', level='ERROR') as logs:
+                    with self.assertRaises(ResearchRunError): run_research('AAPL')
+                pipeline.assert_called_once()
+            for text in logs.output:
+                self.assertNotIn(secret, text)
+                self.assertNotIn('raw payload', text)
+                self.assertNotIn('raw transcript', text)
+
+    def test_stage_from_traceback_without_locals(self):
+        from src.dashboard.research_adapter import _diagnostic
+        namespace = {'__name__': 'src.synthesis'}
+        exec('def fail():\n    raise ValueError("OpenAI returned invalid synthesis JSON.")', namespace)
+        try:
+            namespace['fail']()
+        except ValueError as error:
+            stage, message = _diagnostic(error)
+        self.assertEqual(stage, 'SYNTHESIS')
+        self.assertEqual(message, 'OpenAI returned invalid synthesis JSON.')
