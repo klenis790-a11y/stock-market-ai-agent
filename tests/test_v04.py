@@ -990,3 +990,92 @@ class MultiAgentPipelineTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0].recommendation, self.result.recommendation)
             self.assertEqual(store.get_outcomes_for_decision(records[0].decision_id), [])
+
+    def test_observer_order_isolation_and_unchanged_analysis(self):
+        from copy import deepcopy
+        from unittest.mock import Mock
+        self.setup_pipeline()
+        items = [result(), result(specialist_name='risk'),
+                 result(specialist_name='future_test_specialist')]
+        context = MultiAgentSynthesisContext('TEST', items)
+        original = deepcopy(context)
+        self.specialists.side_effect = None
+        self.specialists.return_value = context
+        baseline = self.run(use_multi_agent=True)
+        self.specialists.reset_mock()
+        self.synthesis.reset_mock()
+        events = []
+
+        def observe(captured):
+            events.append('callback')
+            self.assertEqual(captured, items)
+            self.assertTrue(all(isinstance(x, SpecialistAnalysis) for x in captured))
+            # Nested mutations by an observer must never reach synthesis.
+            captured[0].key_findings[0].evidence_refs.append('NOT_EVIDENCE')
+            captured.reverse()
+
+        callback = Mock(side_effect=observe)
+        def synthesize(received, evidence):
+            events.append('synthesis')
+            self.assertIs(received, context)
+            self.assertEqual(received, original)
+            self.assertIs(evidence, self.evidence)
+            return self.result
+        self.synthesis.side_effect = synthesize
+        returned = self.run(use_multi_agent=True, on_specialists_complete=callback)
+        self.assertIs(returned, baseline)
+        self.assertIsInstance(returned, InvestmentAnalysis)
+        callback.assert_called_once()
+        self.specialists.assert_called_once()
+        self.synthesis.assert_called_once()
+        self.assertEqual(events, ['callback', 'synthesis'])
+        self.old.assert_not_called()
+        self.save.assert_not_called()
+
+    def test_observer_failure_is_fatal_without_retry_or_save(self):
+        from unittest.mock import Mock
+        self.setup_pipeline()
+        error = RuntimeError('Observer failed')
+        callback = Mock(side_effect=error)
+        with self.assertRaises(RuntimeError) as caught:
+            self.run(use_multi_agent=True, on_specialists_complete=callback,
+                     decision_store=object(), decision_timestamp='now')
+        self.assertIs(caught.exception, error)
+        callback.assert_called_once()
+        self.specialists.assert_called_once()
+        self.synthesis.assert_not_called()
+        self.save.assert_not_called()
+        self.old.assert_not_called()
+
+    def test_observer_not_called_for_single_agent_or_failed_specialists(self):
+        from unittest.mock import Mock
+        self.setup_pipeline()
+        callback = Mock()
+        self.assertIs(self.run(on_specialists_complete=callback), self.result)
+        callback.assert_not_called()
+        self.specialists.side_effect = ValueError('Specialist failed')
+        with self.assertRaises(ValueError):
+            self.run(use_multi_agent=True, on_specialists_complete=callback)
+        callback.assert_not_called()
+        self.synthesis.assert_not_called()
+
+    def test_observer_real_orchestration_analyzers_once(self):
+        from unittest.mock import Mock, patch
+        from src.multi_agent import run_specialists
+        self.setup_pipeline()
+        registry = {}
+        for name in ('fundamental', 'risk'):
+            registry[name] = (
+                Mock(return_value=SpecialistContext('TEST', name, self.evidence)),
+                Mock(return_value=result(specialist_name=name)),
+            )
+        self.specialists.side_effect = run_specialists
+        captured = []
+        with patch('src.multi_agent.ACTIVE_SPECIALISTS', registry):
+            returned = self.run(use_multi_agent=True, on_specialists_complete=captured.extend)
+        self.assertIs(returned, self.result)
+        self.assertEqual([x.specialist_name for x in captured], list(registry))
+        for builder, analyzer in registry.values():
+            builder.assert_called_once()
+            analyzer.assert_called_once()
+        self.synthesis.assert_called_once()

@@ -67,6 +67,10 @@ class ResearchPageData:
     evidence_catalog: list[dict] | None = None
     portfolio_context: PortfolioAnalysisContext | None = None
     availability: dict[str, UISectionAvailability] = field(default_factory=dict)
+    # Published together only after one successful run; session-only, not history.
+    specialist_results: list[SpecialistAnalysis] = field(default_factory=list)
+    portfolio_context_supplied: bool = False
+    memory_context_supplied: bool = False
 
 
 @dataclass

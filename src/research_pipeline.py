@@ -1,6 +1,7 @@
 from src.multi_agent import run_specialists
 from src.synthesis import synthesize_investment_analysis
 from collections.abc import Callable
+from copy import deepcopy
 from src.decision_memory import build_decision_memory_context
 from src.decision_history import save_analysis_decision
 from src.decision_store import DecisionStore
@@ -12,7 +13,7 @@ from src import alpha_vantage_client as api
 from src import normalizers as normalize
 from src.analysis import analyze_investment
 from src.evidence import build_evidence_package
-from src.models import DecisionRecord, DecisionMemoryContext, InvestmentAnalysis
+from src.models import DecisionRecord, DecisionMemoryContext, InvestmentAnalysis, SpecialistAnalysis
 from src.research_snapshot import build_research_snapshot
 
 
@@ -76,7 +77,14 @@ def run_stock_research(
     specialist_names: list[str] | None = None,
     on_memory: Callable[[DecisionMemoryContext], None] | None = None,
     on_decision_saved: Callable[[DecisionRecord], None] | None = None,
+    on_specialists_complete: Callable[[list[SpecialistAnalysis]], None] | None = None,
 ) -> InvestmentAnalysis:
+    """Return final analysis; optional multi-agent observation never changes its type.
+
+    The observer receives defensive copies of the same-run ordered typed results,
+    protecting synthesis from observer mutations. Observer errors propagate before
+    synthesis/persistence, with no retries. Single-agent runs do not notify it.
+    """
     if not use_multi_agent and specialist_names is not None:
         raise ValueError("specialist_names requires use_multi_agent=True.")
     # Preserve legacy store-implies-save behavior; False permits read-only use.
@@ -100,6 +108,8 @@ def run_stock_research(
             evidence["ticker"], evidence, decision_memory=memory_context,
             specialist_names=specialist_names,
         )
+        if on_specialists_complete is not None:
+            on_specialists_complete(deepcopy(synthesis_context.specialist_results))
         result = synthesize_investment_analysis(synthesis_context, evidence)
     else:
         result = analyze_investment(evidence,

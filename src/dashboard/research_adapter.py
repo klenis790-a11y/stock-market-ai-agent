@@ -73,9 +73,12 @@ def _diagnostic(error):
 
 def run_research(value: str) -> ResearchPageData:
     ticker = normalize_ticker(value)
+    # Local capture is discarded on failure; the page publishes one complete result.
+    specialists = []
     try:
         analysis = run_stock_research(ticker, use_multi_agent=True,
-                                      persist_decision=False, use_decision_memory=False)
+                                      persist_decision=False, use_decision_memory=False,
+                                      on_specialists_complete=specialists.extend)
     except (RuntimeError, ValueError) as error:
         stage, message = _diagnostic(error)
         logging.getLogger(__name__).error(
@@ -84,7 +87,11 @@ def run_research(value: str) -> ResearchPageData:
         )
         # Never display arbitrary exception text, which might contain credentials.
         raise ResearchRunError('Research failed during retrieval, AI analysis or validation. Check server configuration and try again explicitly.') from None
-    return ResearchPageData(analysis=analysis, availability={
+    return ResearchPageData(analysis=analysis, specialist_results=specialists,
+                           portfolio_context_supplied=False, memory_context_supplied=False,
+                           availability={
         'evidence': UISectionAvailability(False, False, 'Evidence IDs are preserved below. Same-run catalog resolution is unavailable through the current pipeline return value.'),
-        'specialists': UISectionAvailability(False, False, 'Individual specialist results are not exposed by the current pipeline return value.'),
+        'specialists': UISectionAvailability(True, bool(specialists),
+            'Same-run specialist results captured for inspection.' if specialists else
+            'No specialist results captured for this run.'),
     })
