@@ -1,5 +1,6 @@
 """Launch with .venv/bin/python -m streamlit run dashboard.py."""
 import streamlit as st
+from src.configuration import load_local_environment
 from src.ui_contracts import DASHBOARD_PAGES
 from src.dashboard import home, research, portfolio, agent_room, decision_history, performance
 
@@ -10,6 +11,11 @@ RENDERERS = {
 }
 
 st.set_page_config(page_title='Investment Research', layout='wide')
+try:
+    load_local_environment()
+except RuntimeError:
+    st.error('Local environment configuration could not be loaded. Check server configuration.')
+    st.stop()
 st.sidebar.title('Investment Research')
 st.sidebar.caption('V0.5 · Dashboard shell')
 page = st.sidebar.radio('Workspace', [p.key for p in DASHBOARD_PAGES],

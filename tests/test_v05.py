@@ -100,6 +100,11 @@ class UIContractTests(unittest.TestCase):
 
 
 class DashboardShellTests(unittest.TestCase):
+    def setUp(self):
+        bootstrap = patch('src.configuration.load_local_environment')
+        bootstrap.start()
+        self.addCleanup(bootstrap.stop)
+
     def test_navigation_renders_all_pages_offline(self):
         from streamlit.testing.v1 import AppTest
         root = Path(__file__).resolve().parents[1]
@@ -139,6 +144,9 @@ class DashboardShellTests(unittest.TestCase):
 
 class ResearchWorkspaceTests(unittest.TestCase):
     def setUp(self):
+        bootstrap = patch('src.configuration.load_local_environment')
+        bootstrap.start()
+        self.addCleanup(bootstrap.stop)
         from test_v01 import evidence, payload
         from src.analysis import _validate_analysis
         self.analysis = _validate_analysis(payload(evidence()), evidence())
@@ -278,3 +286,58 @@ class ResearchDiagnosticTests(unittest.TestCase):
             stage, message = _diagnostic(error)
         self.assertEqual(stage, 'SYNTHESIS')
         self.assertEqual(message, 'OpenAI returned invalid synthesis JSON.')
+
+
+class EnvironmentBootstrapTests(unittest.TestCase):
+    def test_literal_credentials_and_environment_precedence(self):
+        import os
+        import tempfile
+        from src.configuration import load_local_environment
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            path = Path(directory) / '.env'
+            path.write_text('export ALPHA_VANTAGE_API_KEY="fixture-av"\nOPENAI_API_KEY=fixture-ai # comment\nUNRELATED=ignored\n')
+            load_local_environment(path)
+            self.assertEqual(os.environ['ALPHA_VANTAGE_API_KEY'], 'fixture-av')
+            self.assertEqual(os.environ['OPENAI_API_KEY'], 'fixture-ai')
+            self.assertNotIn('UNRELATED', os.environ)
+            os.environ['OPENAI_API_KEY'] = 'shell-fixture'
+            load_local_environment(path)
+            self.assertEqual(os.environ['OPENAI_API_KEY'], 'shell-fixture')
+
+    def test_missing_credentials_keep_client_checks(self):
+        import os
+        import tempfile
+        from src.configuration import load_local_environment
+        from src.alpha_vantage_client import get_company_overview
+        from src.openai_client import request_text
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            load_local_environment(Path(directory) / 'absent')
+            with self.assertRaisesRegex(RuntimeError, 'ALPHA_VANTAGE_API_KEY must be configured'):
+                get_company_overview('TEST')
+            with self.assertRaisesRegex(RuntimeError, 'OPENAI_API_KEY must be configured'):
+                request_text(input='unused', max_output_tokens=1)
+
+    def test_dashboard_bootstrap_without_provider_calls(self):
+        import os
+        from streamlit.testing.v1 import AppTest
+        def bootstrap():
+            os.environ['ALPHA_VANTAGE_API_KEY'] = 'fixture-av'
+            os.environ['OPENAI_API_KEY'] = 'fixture-ai'
+        with patch.dict(os.environ, {}, clear=True), patch('src.configuration.load_local_environment', side_effect=bootstrap) as loader, patch('src.dashboard.research_adapter.run_stock_research') as pipeline:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+            self.assertFalse(app.exception)
+            loader.assert_called_once()
+            pipeline.assert_not_called()
+            self.assertEqual(os.environ['OPENAI_API_KEY'], 'fixture-ai')
+            self.assertEqual(os.environ['ALPHA_VANTAGE_API_KEY'], 'fixture-av')
+
+    def test_invalid_file_error_contains_no_secret(self):
+        import os
+        import tempfile
+        from src.configuration import load_local_environment
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {}, clear=True):
+            path = Path(directory) / '.env'
+            path.write_text('OPENAI_API_KEY="private-fixture\n')
+            with self.assertRaises(RuntimeError) as error: load_local_environment(path)
+            self.assertNotIn('private-fixture', str(error.exception))
+            self.assertNotIn('OPENAI_API_KEY', os.environ)
