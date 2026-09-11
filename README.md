@@ -234,3 +234,5 @@ existing environment values. Browsing does not require provider calls; explicit 
 Research and portfolio-price loading require their configured credentials. There is
 no live trading, automatic outcome capture, strategy adaptation or performance guarantee.
 UI tests use Streamlit AppTest with mocked providers and temporary databases.
+
+For a detailed architecture and project-status review through V0.5, see the [V0.5 checkpoint](docs/V0_5_CHECKPOINT.md).
