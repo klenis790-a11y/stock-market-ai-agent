@@ -128,7 +128,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 
@@ -882,3 +882,94 @@ class DecisionSaveTests(unittest.TestCase):
             av.assert_not_called()
             ai.assert_not_called()
             memory.assert_not_called()
+
+
+class HomeOverviewTests(unittest.TestCase):
+    def setUp(self):
+        ResearchWorkspaceTests.setUp(self)
+        self.guards = []
+        for target in ('src.dashboard.research_adapter.run_stock_research',
+                       'src.alpha_vantage_client._request', 'src.openai_client.request_text',
+                       'src.research_pipeline.run_specialists',
+                       'src.research_pipeline.synthesize_investment_analysis',
+                       'src.decision_store.DecisionStore.initialize',
+                       'src.decision_store.DecisionStore.save_decision',
+                       'src.decision_store.DecisionStore.save_outcome'):
+            guard = patch(target, side_effect=AssertionError('Home must not execute investment work'))
+            self.guards.append(guard.start())
+            self.addCleanup(guard.stop)
+
+    def tearDown(self):
+        for guard in self.guards:
+            guard.assert_not_called()
+
+    def app(self):
+        from streamlit.testing.v1 import AppTest
+        return AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+
+    def test_empty_and_navigation_only(self):
+        with patch('src.dashboard.home.load_history', side_effect=AssertionError('No unknown history source')):
+            app = self.app()
+            self.assertFalse(app.exception)
+            self.assertFalse(app.metric)
+            messages = [x.value for x in app.info]
+            self.assertIn('No portfolio loaded in this session.', messages)
+            self.assertIn('No company research has been run in this session.', messages)
+            self.assertIn('No decision-history source selected.', messages)
+            self.assertTrue(any('Performance evaluation is not yet available' in x.value for x in app.caption))
+            for label, destination in [('Research a ticker', 'research'), ('View Portfolio', 'portfolio'),
+                                       ('Inspect Agent Room', 'agent_room'), ('View Decision History', 'decision_history')]:
+                next(x for x in app.button if x.label == label).click().run()
+                self.assertFalse(app.exception)
+                self.assertEqual(app.sidebar.radio[0].value, destination)
+                app.sidebar.radio[0].set_value('home').run()
+
+    def test_existing_values_flags_generic_count_and_no_mutation(self):
+        from copy import deepcopy
+        from test_v04 import result
+        from src.models import PortfolioInput, PortfolioPositionInput
+        from src.portfolio_calculations import build_portfolio_snapshot
+        from src.portfolio_risk import assess_portfolio_risk
+        snapshot = build_portfolio_snapshot(PortfolioInput([PortfolioPositionInput('TEST', 2, 20)], 10), {'TEST': 30})
+        portfolio = ui.PortfolioPageData(snapshot=snapshot, risk_assessment=assess_portfolio_risk(snapshot))
+        research = ui.ResearchPageData(analysis=self.analysis,
+                    specialist_results=[result(), result(specialist_name='risk'), result(specialist_name='future_test_specialist')],
+                    portfolio_context_supplied=True, memory_context_supplied=False)
+        before = deepcopy((portfolio, research))
+        app = self.app()
+        app.session_state['portfolio_result'] = portfolio
+        app.session_state['research_result'] = research
+        with patch('src.portfolio_calculations.build_portfolio_snapshot', side_effect=AssertionError('No recalculation')):
+            app.run()
+        self.assertFalse(app.exception)
+        metrics = {x.label: x.value for x in app.metric}
+        self.assertEqual(metrics['Total portfolio value'], f'{snapshot.total_portfolio_value:,.2f}')
+        self.assertEqual(metrics['Positions value'], f'{snapshot.total_positions_value:,.2f}')
+        self.assertEqual(metrics['Cash'], f'{snapshot.cash:,.2f}')
+        self.assertEqual(metrics['Recommendation'], self.analysis.recommendation)
+        self.assertEqual(metrics['Final confidence'], f'{self.analysis.confidence_score}/100')
+        captions = [x.value for x in app.caption]
+        self.assertTrue(any('3 specialists completed' in x for x in captions))
+        self.assertTrue(any('Portfolio context: Supplied · Historical memory: Not supplied' == x for x in captions))
+        self.assertEqual([x.value for x in app.warning], portfolio.risk_assessment.notes)
+        self.assertEqual((portfolio, research), before)
+
+    def test_known_history_source_read_only_and_missing(self):
+        import tempfile
+        from src.decision_store import DecisionStore
+        from test_v03 import record
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'history.db'
+            # A selected source is forwarded exactly; unknown sources are never queried.
+            with patch('src.dashboard.home.load_history') as load:
+                load.return_value = ui.DecisionHistoryPageData(decisions=[record(ticker='OLD', recommendation='Trim')])
+                app = self.app()
+                load.assert_not_called()
+                app.session_state['history_query'] = (str(path), 'OLD')
+                app.run()
+                load.assert_called_once_with(str(path), 'OLD')
+                self.assertTrue(any('OLD · 2026-01-01 · Trim · Confidence: 60/100' == x.value for x in app.markdown))
+                self.assertFalse(path.exists())
+            app.run()
+            self.assertFalse(path.exists())
+            self.assertTrue(any('No database was created' in x.value for x in app.info))

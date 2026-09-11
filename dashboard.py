@@ -18,7 +18,7 @@ except RuntimeError:
     st.stop()
 st.sidebar.title('Investment Research')
 st.sidebar.caption('V0.5 · Dashboard shell')
-page = st.sidebar.radio('Workspace', [p.key for p in DASHBOARD_PAGES],
+page = st.sidebar.radio('Workspace', [p.key for p in DASHBOARD_PAGES], key='workspace',
                         format_func=lambda key: 'Home' if key == 'home' else next(p.title for p in DASHBOARD_PAGES if p.key == key))
 st.sidebar.caption('Research runs only on explicit submission. No automatic history reads or saves.')
 RENDERERS[page]()
