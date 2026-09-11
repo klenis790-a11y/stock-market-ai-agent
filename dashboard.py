@@ -17,8 +17,8 @@ except RuntimeError:
     st.error('Local environment configuration could not be loaded. Check server configuration.')
     st.stop()
 st.sidebar.title('Investment Research')
-st.sidebar.caption('V0.5 · Dashboard shell')
+st.sidebar.caption('V0.5 · Investment research')
 page = st.sidebar.radio('Workspace', [p.key for p in DASHBOARD_PAGES], key='workspace',
                         format_func=lambda key: 'Home' if key == 'home' else next(p.title for p in DASHBOARD_PAGES if p.key == key))
-st.sidebar.caption('Research runs only on explicit submission. No automatic history reads or saves.')
+st.sidebar.caption('Research runs only on explicit submission. History reads use selected sources. Saving is explicit.')
 RENDERERS[page]()

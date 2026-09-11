@@ -13,7 +13,7 @@ def render():
     header('Performance', 'Observed outcomes from preserved decisions · descriptive, not strategy evaluation')
     query = st.session_state.get('performance_query', st.session_state.get('history_query', ('', '')))
     with st.form('performance_source'):
-        path = st.text_input('History database path', value=query[0])
+        path = st.text_input('Decision database path', value=query[0])
         ticker = st.text_input('Stored ticker', value=query[1])
         submitted = st.form_submit_button('Load Performance')
     if submitted:

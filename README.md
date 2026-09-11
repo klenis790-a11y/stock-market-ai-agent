@@ -37,7 +37,7 @@ Configure these environment variables privately:
 - `ALPHA_VANTAGE_API_KEY`
 - `OPENAI_API_KEY`
 
-Never commit credentials. The project-root `.env` is Git-ignored and is not automatically loaded by Python. If using a trusted local `.env`, load it without shell tracing:
+Never commit credentials. The project-root `.env` is Git-ignored. The CLI uses process environment variables; the dashboard loads supported credentials through its bootstrap helper. If using a trusted local `.env`, load it without shell tracing:
 
 ```sh
 set +x
@@ -204,7 +204,7 @@ prove semantic correctness; human review remains necessary. The Step 10B live re
 validated with one prior decision, no additional saved decision, zero outcomes, and Hold
 at 62/100; this single run is not evidence of general investment accuracy.
 
-## V0.5 dashboard shell
+## V0.5 dashboard
 
 Install the pinned dependencies with `.venv/bin/python -m pip install -r requirements.txt`.
 From the repository root, launch:
@@ -213,8 +213,24 @@ From the repository root, launch:
 .venv/bin/python -m streamlit run dashboard.py
 ```
 
-The persistent sidebar provides Home, Research, Portfolio, Agent Room, Decision
-History and Performance. This step provides structural empty states only: no
-research execution, database access or fabricated financial data. No credentials
-are required to browse the shell. Performance remains unavailable. The CLI and
-investment engine are unchanged. UI tests use Streamlit AppTest without a browser.
+The sidebar provides six workspaces:
+
+- **Home:** compact overview of existing session results and explicitly selected history.
+- **Research:** explicit live standalone multi-agent company analysis. Results remain in session state; navigation does not rerun research.
+- **Portfolio:** explicit loading and inspection through the V0.2 portfolio backend, including deterministic risk flags.
+- **Agent Room:** inspection of ordered specialist outputs and final synthesis from the same Research run; no extra AI calls.
+- **Decision History:** read-only preserved decisions and separately attached outcomes from an explicit local database path and ticker.
+- **Performance:** descriptive summaries of stored outcomes for the selected ticker, with sample counts and missing benchmark values preserved. Later `DecisionOutcome` observations are required; none are created automatically.
+
+Research does not automatically save decisions or retrieve historical memory. After
+reviewing a result, use **Save Decision** and choose a **Decision database path** to
+persist it through V0.3. The save may initialize a local SQLite file; read-only pages
+never create one. Database files (`*.db`, `*.sqlite`, `*.sqlite3`) and SQLite sidecars
+are gitignored. Historical evidence catalogs, reference prices and original context
+snapshots are not reconstructed from current data.
+
+The dashboard loads supported credentials from the project-root local `.env`, preserving
+existing environment values. Browsing does not require provider calls; explicit live
+Research and portfolio-price loading require their configured credentials. There is
+no live trading, automatic outcome capture, strategy adaptation or performance guarantee.
+UI tests use Streamlit AppTest with mocked providers and temporary databases.

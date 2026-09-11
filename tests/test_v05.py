@@ -917,7 +917,7 @@ class HomeOverviewTests(unittest.TestCase):
             self.assertIn('No portfolio loaded in this session.', messages)
             self.assertIn('No company research has been run in this session.', messages)
             self.assertIn('No decision-history source selected.', messages)
-            self.assertTrue(any('Performance evaluation is not yet available' in x.value for x in app.caption))
+            self.assertTrue(any('Open Performance to inspect stored outcome summaries' in x.value for x in app.caption))
             for label, destination in [('Research a ticker', 'research'), ('View Portfolio', 'portfolio'),
                                        ('Inspect Agent Room', 'agent_room'), ('View Decision History', 'decision_history')]:
                 next(x for x in app.button if x.label == label).click().run()
@@ -948,7 +948,7 @@ class HomeOverviewTests(unittest.TestCase):
         self.assertEqual(metrics['Positions value'], f'{snapshot.total_positions_value:,.2f}')
         self.assertEqual(metrics['Cash'], f'{snapshot.cash:,.2f}')
         self.assertEqual(metrics['Recommendation'], self.analysis.recommendation)
-        self.assertEqual(metrics['Final confidence'], f'{self.analysis.confidence_score}/100')
+        self.assertEqual(metrics['Final synthesis confidence'], f'{self.analysis.confidence_score}/100')
         captions = [x.value for x in app.caption]
         self.assertTrue(any('3 specialists completed' in x for x in captions))
         self.assertTrue(any('Portfolio context: Supplied · Historical memory: Not supplied' == x for x in captions))

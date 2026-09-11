@@ -18,7 +18,7 @@ def specialist_results(items):
     for item in items:
         st.subheader(item.specialist_name)
         st.write(item.summary)
-        st.caption(f'Confidence: {item.confidence_score}/100')
+        st.caption(f'Specialist confidence: {item.confidence_score}/100')
         statements(item.key_findings)
         statements(item.risks)
         statements(item.scenarios)
@@ -31,7 +31,7 @@ def display_result(data):
     st.subheader(analysis.ticker)
     recommendation, confidence = st.columns(2)
     recommendation.metric('Recommendation', analysis.recommendation)
-    confidence.metric('Confidence', f'{analysis.confidence_score}/100')
+    confidence.metric('Final synthesis confidence', f'{analysis.confidence_score}/100')
     st.caption('Standalone company research · AI synthesis · No portfolio context or historical memory')
     for title, text in [('Fundamental assessment', analysis.fundamental_assessment),
                         ('Valuation assessment', analysis.valuation_assessment),
@@ -67,14 +67,14 @@ def display_result(data):
             st.write(review.observation)
             st.write(review.thesis_relevance)
     with st.expander('Specialist analysis'):
-        st.info(data.availability['specialists'].reason)
+        st.caption('Inspect same-run specialist details in Agent Room.' if data.specialist_results else data.availability['specialists'].reason)
 
 
 def save_controls(data):
     with st.form('save_decision'):
         st.subheader('Save this decision')
         st.caption('Optional local history save for the displayed result. No outcomes or memory are created.')
-        path = st.text_input('Decision database path', placeholder='decisions.db')
+        path = st.text_input('Decision database path', placeholder='decisions.db', help='Choose a local SQLite file. Save Decision may create it; browsing history never creates it.')
         save = st.form_submit_button('Save Decision')
     if save:
         st.session_state.pop('decision_save_error', None)

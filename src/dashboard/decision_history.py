@@ -63,7 +63,7 @@ def render():
     header('Decision History', 'Inspect preserved decisions separately from later observed outcomes.')
     previous_query = st.session_state.get('history_query', ('', ''))
     with st.form('history_input'):
-        path = st.text_input('Database path', value=previous_query[0], placeholder='Path to an existing SQLite database', key='history_path')
+        path = st.text_input('Decision database path', value=previous_query[0], placeholder='Path to an existing SQLite database', key='history_path')
         ticker = st.text_input('Stored ticker', value=previous_query[1], placeholder='AAPL', key='history_ticker')
         st.caption('Ticker-specific history only. No database is created and no current research is retrieved.')
         submitted = st.form_submit_button('Load History')

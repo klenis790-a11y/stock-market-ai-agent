@@ -38,7 +38,7 @@ def render():
         ticker, recommendation, confidence = st.columns(3)
         ticker.metric('Ticker', analysis.ticker)
         recommendation.metric('Recommendation', analysis.recommendation)
-        confidence.metric('Final confidence', f'{analysis.confidence_score}/100')
+        confidence.metric('Final synthesis confidence', f'{analysis.confidence_score}/100')
         st.write(analysis.reasoning_summary[:400] + ('…' if len(analysis.reasoning_summary) > 400 else ''))
         st.caption('Portfolio context: ' + ('Supplied' if research.portfolio_context_supplied else 'Not supplied')
                    + ' · Historical memory: ' + ('Supplied' if research.memory_context_supplied else 'Not supplied'))
@@ -86,4 +86,4 @@ def render():
             ('research', 'portfolio', 'agent_room', 'decision_history')):
         col.button(label, on_click=navigate, args=(destination,))
     st.subheader('Performance')
-    st.caption('Performance evaluation is not yet available. Stored outcomes alone are not evaluated performance analytics.')
+    st.caption('Open Performance to inspect stored outcome summaries. Later observations are required; no results are inferred here.')

@@ -32,6 +32,7 @@ def display_portfolio(data):
                 row[key] = weight(row[key])
         st.dataframe(rows, hide_index=True)
     st.subheader('Concentration / risk')
+    st.caption('DETERMINISTIC PORTFOLIO RISK')
     st.write('Largest position:', snapshot.largest_position_ticker or 'Unavailable / no position')
     st.write('Largest position weight:', weight(snapshot.largest_position_weight))
     st.write('Cash weight:', weight(snapshot.cash_weight))
