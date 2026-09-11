@@ -105,5 +105,11 @@ class DecisionHistoryPageData:
 @dataclass
 class PerformancePageData:
     availability: UISectionAvailability = field(default_factory=lambda: UISectionAvailability(
-        False, False, 'Performance analytics are not implemented; stored outcomes alone do not establish evaluated performance.'
+        True, False, 'No decision-history source selected.'
     ))
+
+    rows: list[dict] = field(default_factory=list)
+    summary: dict = field(default_factory=dict)
+    recommendations: dict[str, dict] = field(default_factory=dict)
+    horizons: dict[str, dict] = field(default_factory=dict)
+    confidence_groups: dict[str, dict] = field(default_factory=dict)

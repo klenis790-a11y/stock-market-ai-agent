@@ -78,10 +78,11 @@ class UIContractTests(unittest.TestCase):
 
     def test_performance_honest_default(self):
         page = ui.PerformancePageData()
-        self.assertFalse(page.availability.backend_supported)
+        self.assertTrue(page.availability.backend_supported)
         self.assertFalse(page.availability.data_available)
         self.assertTrue(page.availability.reason)
-        self.assertEqual([f.name for f in fields(page)], ['availability'])
+        self.assertEqual(page.rows, [])
+        self.assertEqual(page.summary, {})
 
     def test_empty_containers_independent(self):
         a, b = ui.AgentRoomPageData(), ui.AgentRoomPageData()
@@ -118,7 +119,7 @@ class DashboardShellTests(unittest.TestCase):
                 self.assertFalse(app.exception)
                 self.assertEqual(app.title[0].value, title)
                 self.assertFalse(app.metric)
-            self.assertIn('not implemented', app.info[0].value)
+            self.assertIn('No decision-history source selected', app.info[0].value)
 
     def test_page_modules_import_and_boundaries(self):
         import importlib
@@ -128,7 +129,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio', 'src.dashboard.performance_adapter'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 
@@ -973,3 +974,109 @@ class HomeOverviewTests(unittest.TestCase):
             app.run()
             self.assertFalse(path.exists())
             self.assertTrue(any('No database was created' in x.value for x in app.info))
+
+
+class PerformanceDashboardTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from src.decision_store import DecisionStore
+        from test_v03 import record, outcome
+        ResearchWorkspaceTests.setUp(self)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / 'performance.db'
+        self.store = DecisionStore(str(self.path))
+        self.store.initialize()
+        self.records = []
+        self.outcomes = []
+        for i, stock in enumerate((0.2, -0.1, 0.0, 0.4, 0.5, None)):
+            item = record(decision_id=str(i), ticker='TEST', recommendation='Buy' if i < 3 else 'Avoid', confidence_score=45 if i < 3 else 85)
+            later = outcome(decision_id=str(i), evaluation_horizon='custom horizon' if i < 3 else '1 year',
+                            stock_return=stock, benchmark_return=0.1 if i in (0, 1, 5) else None,
+                            excess_return=0.1 if i == 0 else -0.2 if i == 1 else None,
+                            benchmark_ticker='VOO' if i in (0, 1, 5) else None)
+            self.store.save_decision(item)
+            self.store.save_outcome(later)
+            self.records.append(item)
+            self.outcomes.append(later)
+        self.before = self.path.read_bytes()
+        self.guards = []
+        for target in ('src.alpha_vantage_client._request', 'src.openai_client.request_text',
+                       'src.dashboard.research_adapter.run_stock_research',
+                       'src.decision_store.DecisionStore.initialize',
+                       'src.decision_store.DecisionStore.save_decision',
+                       'src.decision_store.DecisionStore.save_outcome'):
+            guard = patch(target, side_effect=AssertionError('Read-only evaluation'))
+            self.guards.append(guard.start())
+            self.addCleanup(guard.stop)
+
+    def tearDown(self):
+        for guard in self.guards:
+            guard.assert_not_called()
+        self.assertEqual(self.path.read_bytes(), self.before)
+
+    def test_stored_aggregates_denominators_and_groups(self):
+        from src.dashboard.performance_adapter import load_performance
+        data = load_performance(str(self.path), ' test ')
+        self.assertEqual(len(data.rows), 6)
+        self.assertEqual(data.summary['stock_return_count'], 5)
+        self.assertAlmostEqual(data.summary['average_stock_return'], 0.2)
+        self.assertEqual(data.summary['benchmark_return_count'], 3)
+        self.assertAlmostEqual(data.summary['average_benchmark_return'], 0.1)
+        self.assertEqual(data.summary['excess_return_count'], 2)
+        self.assertAlmostEqual(data.summary['average_excess_return'], -0.05)
+        self.assertEqual(data.summary['positive_return_count'], 3)
+        self.assertEqual(data.summary['positive_return_rate'], 0.6)
+        self.assertEqual(data.summary['benchmark_outperformance_count'], 1)
+        self.assertEqual(data.summary['benchmark_outperformance_rate'], 0.5)
+        self.assertEqual(set(data.recommendations), {'Buy', 'Avoid'})
+        self.assertEqual(set(data.horizons), {'custom horizon', '1 year'})
+        self.assertEqual(set(data.confidence_groups), {'0–49', '80–89'})
+        for original in self.records:
+            self.assertEqual(self.store.get_decision(original.decision_id), original)
+        for original in self.outcomes:
+            self.assertEqual(self.store.get_outcome(original.decision_id, original.evaluation_horizon), original)
+
+    def test_no_source_missing_no_returns_and_single(self):
+        from src.dashboard.performance_adapter import load_performance, summarize, confidence_bucket
+        self.assertFalse(load_performance('', '').availability.data_available)
+        missing = self.path.parent / 'absent.db'
+        self.assertFalse(load_performance(str(missing), 'TEST').availability.data_available)
+        self.assertFalse(missing.exists())
+        history = ui.DecisionHistoryPageData(decisions=[self.records[0]],
+            availability={'history': ui.UISectionAvailability(True, True)})
+        with patch('src.dashboard.performance_adapter.load_history', return_value=history):
+            empty = load_performance(str(self.path), 'TEST')
+            self.assertIn('No evaluated decision outcomes', empty.availability.reason)
+            self.assertEqual(empty.summary, {})
+            history.outcomes = [self.outcomes[0]]
+            self.assertEqual(load_performance(str(self.path), 'TEST').summary['stock_return_count'], 1)
+        summary = summarize([{'stock_return': None, 'benchmark_return': float('nan'), 'excess_return': float('inf')}])
+        self.assertIsNone(summary['average_stock_return'])
+        self.assertIsNone(summary['average_benchmark_return'])
+        self.assertIsNone(summary['benchmark_outperformance_rate'])
+        self.assertEqual([confidence_bucket(x) for x in (49.9, 50, 90, 100)], ['0–49', '50–59', '90–100', '90–100'])
+
+    def test_page_charts_sample_warning_and_read_only(self):
+        from streamlit.testing.v1 import AppTest
+        app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+        app.sidebar.radio[0].set_value('performance').run()
+        self.assertFalse(app.exception)
+        self.assertFalse(app.metric)
+        self.assertFalse(app.get('vega_lite_chart'))
+        self.assertIn('No decision-history source selected', app.info[0].value)
+        app.text_input[0].set_value(str(self.path))
+        app.text_input[1].set_value('TEST')
+        app.button[0].click().run()
+        self.assertFalse(app.exception)
+        self.assertEqual(app.metric[0].value, '5')
+        self.assertTrue(app.warning)
+        self.assertEqual(len(app.dataframe), 4)
+        self.assertTrue(app.get('vega_lite_chart'))
+        app.run()
+        from src.dashboard.performance_adapter import load_performance
+        data = load_performance(str(self.path), 'TEST')
+        data.summary['stock_return_count'] = 1
+        with patch('src.dashboard.performance.load_performance', return_value=data):
+            app.run()
+            self.assertFalse(app.get('vega_lite_chart'))
