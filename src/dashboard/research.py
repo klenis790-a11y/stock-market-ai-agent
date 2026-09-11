@@ -2,6 +2,7 @@
 import streamlit as st
 from src.models import ForecastStatement
 from src.dashboard.components import header
+from src.dashboard.decision_save_adapter import save_research_decision, DecisionSaveError
 from src.dashboard.research_adapter import run_research, ResearchInputError, ResearchRunError
 
 
@@ -69,6 +70,29 @@ def display_result(data):
         st.info(data.availability['specialists'].reason)
 
 
+def save_controls(data):
+    with st.form('save_decision'):
+        st.subheader('Save this decision')
+        st.caption('Optional local history save for the displayed result. No outcomes or memory are created.')
+        path = st.text_input('Decision database path', placeholder='decisions.db')
+        save = st.form_submit_button('Save Decision')
+    if save:
+        st.session_state.pop('decision_save_error', None)
+        previous = st.session_state.get('saved_decision')
+        try:
+            record = save_research_decision(data, path,
+                decision_id=previous.decision_id if previous else None,
+                decision_timestamp=previous.decision_timestamp if previous else None)
+            st.session_state['saved_decision'] = record
+        except DecisionSaveError as error:
+            st.session_state['decision_save_error'] = str(error)
+    if st.session_state.get('decision_save_error'):
+        st.error(st.session_state['decision_save_error'])
+    elif st.session_state.get('saved_decision'):
+        record = st.session_state['saved_decision']
+        st.success(f'Decision saved. {record.ticker} · {record.decision_timestamp} · {record.decision_id}')
+
+
 def render():
     header('Research', 'Run standalone multi-agent research and inspect its evidence-grounded synthesis.')
     with st.form('research_input', border=True):
@@ -81,6 +105,8 @@ def render():
     if submitted:
         st.session_state.pop('research_result', None)
         st.session_state.pop('research_error', None)
+        st.session_state.pop('saved_decision', None)
+        st.session_state.pop('decision_save_error', None)
         try:
             with st.spinner('Running multi-agent research…'):
                 st.session_state['research_result'] = run_research(ticker)
@@ -91,6 +117,7 @@ def render():
     data = st.session_state.get('research_result')
     if data is not None:
         display_result(data)
+        save_controls(data)
     else:
         st.info('No research result loaded. Submit a ticker to run research.')
         st.subheader('Evidence / provenance')

@@ -128,7 +128,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 
@@ -788,3 +788,97 @@ class HistoryDashboardTests(unittest.TestCase):
         self.assertFalse(app.exception)
         self.assertIn('No database was created', app.info[0].value)
         self.assertEqual(self.path.read_bytes(), self.before)
+
+
+class DecisionSaveTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        ResearchWorkspaceTests.setUp(self)
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.path = Path(temp.name) / 'decisions.db'
+        from src.dashboard.research_adapter import run_research
+        with patch('src.dashboard.research_adapter.run_stock_research', return_value=self.analysis):
+            self.data = run_research('TEST')
+
+    def test_mapping_timestamp_history_and_duplicate(self):
+        from src.dashboard.decision_save_adapter import save_research_decision, DecisionSaveError
+        from src.decision_history import save_analysis_decision
+        from src.dashboard.history_adapter import load_history
+        from copy import deepcopy
+        original = deepcopy(self.data)
+        with patch('src.dashboard.decision_save_adapter.utc_decision_timestamp', return_value='20260911T120000.000000Z') as clock, \
+                patch('src.dashboard.decision_save_adapter.save_analysis_decision', wraps=save_analysis_decision) as save:
+            record = save_research_decision(self.data, str(self.path))
+        clock.assert_called_once()
+        save.assert_called_once()
+        self.assertIs(save.call_args.args[0], self.analysis)
+        self.assertEqual(record.decision_timestamp, '20260911T120000.000000Z')
+        for field in fields(self.analysis):
+            self.assertEqual(getattr(record, field.name), getattr(self.analysis, field.name))
+        history = load_history(str(self.path), 'TEST')
+        self.assertEqual(history.decisions, [record])
+        self.assertEqual(history.outcomes, [])
+        self.assertEqual(original, self.data)
+        with self.assertRaises(DecisionSaveError):
+            save_research_decision(self.data, str(self.path), decision_id=record.decision_id,
+                                   decision_timestamp=record.decision_timestamp)
+        self.assertEqual(load_history(str(self.path), 'TEST').decisions, [record])
+
+    def test_invalid_and_persistence_error_sanitized(self):
+        import sqlite3
+        from src.dashboard.decision_save_adapter import save_research_decision, DecisionSaveError
+        with patch('src.dashboard.decision_save_adapter.DecisionStore') as store:
+            for data, path in ((None, str(self.path)), (ui.ResearchPageData(), str(self.path)),
+                               (self.data, ''), (self.data, 'https://invalid'), (self.data, ':memory:')):
+                with self.assertRaises(DecisionSaveError):
+                    save_research_decision(data, path)
+            store.assert_not_called()
+        with patch('src.dashboard.decision_save_adapter.DecisionStore.initialize',
+                   side_effect=sqlite3.OperationalError('secret error detail')):
+            with self.assertRaises(DecisionSaveError) as caught:
+                save_research_decision(self.data, str(self.path))
+        self.assertNotIn('secret', str(caught.exception))
+        self.assertFalse(self.path.exists())
+
+    def test_explicit_save_reruns_navigation_and_new_failed_run(self):
+        from streamlit.testing.v1 import AppTest
+        from src.dashboard.history_adapter import load_history
+        with patch('src.dashboard.research_adapter.run_stock_research', return_value=self.analysis) as pipeline, \
+                patch('src.alpha_vantage_client._request', side_effect=AssertionError('No provider')) as av, \
+                patch('src.openai_client.request_text', side_effect=AssertionError('No AI')) as ai, \
+                patch('src.decision_memory.build_decision_memory_context', side_effect=AssertionError('No memory')) as memory:
+            app = AppTest.from_file(str(Path(__file__).resolve().parents[1] / 'dashboard.py')).run()
+            app.sidebar.radio[0].set_value('research').run()
+            self.assertNotIn('Save Decision', [x.label for x in app.button])
+            app.text_input[0].set_value('TEST')
+            app.button[0].click().run()
+            self.assertFalse(self.path.exists())
+            self.assertIn('Save Decision', [x.label for x in app.button])
+            app.text_input[0].set_value('UNSUBMITTED')
+            app.text_input[1].set_value(str(self.path))
+            app.button[1].click().run()
+            self.assertFalse(app.exception)
+            self.assertTrue(app.success)
+            pipeline.assert_called_once()
+            records = load_history(str(self.path), 'TEST').decisions
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0].ticker, self.analysis.ticker)
+            app.run()
+            app.sidebar.radio[0].set_value('agent_room').run()
+            app.sidebar.radio[0].set_value('research').run()
+            self.assertEqual(len(load_history(str(self.path), 'TEST').decisions), 1)
+            app.text_input[1].set_value(str(self.path))
+            app.button[1].click().run()
+            self.assertTrue(app.error)
+            self.assertFalse(app.success)
+            self.assertEqual(len(load_history(str(self.path), 'TEST').decisions), 1)
+            pipeline.side_effect = RuntimeError('Failed research')
+            app.text_input[0].set_value('FAILED')
+            app.button[0].click().run()
+            self.assertNotIn('Save Decision', [x.label for x in app.button])
+            self.assertNotIn('saved_decision', app.session_state)
+            self.assertEqual(load_history(str(self.path), 'TEST').outcomes, [])
+            av.assert_not_called()
+            ai.assert_not_called()
+            memory.assert_not_called()
