@@ -134,3 +134,103 @@ class EvaluationFoundationTests(unittest.TestCase):
         missing = EvaluationStore(str(self.path.parent / 'absent.db'), read_only=True)
         with self.assertRaises(sqlite3.OperationalError): missing.get_enrollment('x')
         self.assertFalse((self.path.parent / 'absent.db').exists())
+
+
+class EvaluationEngineTests(unittest.TestCase):
+    def inputs(self, end=110, benchmark=105):
+        contract = enrollment()
+        def point(role, timestamp, price, bench):
+            def fact(symbol, amount):
+                return None if amount is None else EvaluationPrice(symbol, amount, timestamp, timestamp,
+                    'fixture', 'regular_close', contract.methodology.adjustment_policy, 'USD')
+            return EvaluationObservation(role, 'enroll', role, timestamp, timestamp,
+                fact('TEST', price), fact('VOO', bench), 'Unavailable fixture price' if price is None or bench is None else None)
+        return contract, point('reference', '2026-01-03T21:00:00Z', 100, 100), point('endpoint', '2026-04-03T21:00:00Z', end, benchmark), record()
+
+    def test_returns_metadata_and_determinism(self):
+        from src.evaluation_engine import evaluate_observations
+        from copy import deepcopy
+        for price, expected in ((110, .1), (90, -.1), (100, 0)):
+            for recommendation in ('Buy', 'Accumulate', 'Hold', 'Trim', 'Avoid'):
+                args = list(self.inputs(price))
+                args[3] = replace(args[3], recommendation=recommendation)
+                before = deepcopy(args)
+                result = evaluate_observations(*args)
+                self.assertAlmostEqual(result.stock_return, expected)
+                self.assertAlmostEqual(result.benchmark_return, .05)
+                self.assertAlmostEqual(result.excess_return, expected - .05)
+                self.assertEqual(result.recommendation, recommendation)
+                self.assertEqual(result.confidence_score, args[3].confidence_score)
+                self.assertEqual(result.enrollment.horizon, args[0].horizon)
+                self.assertEqual(result.enrollment.methodology.snapshot, args[0].methodology.snapshot)
+                self.assertEqual(result.completeness, 'full')
+                self.assertFalse(result.horizon_resolution_verified)
+                self.assertEqual(evaluate_observations(*args), result)
+                self.assertEqual(before, args)
+
+    def test_missing_and_invalid_prices(self):
+        from src.evaluation_engine import evaluate_observations
+        result = evaluate_observations(*self.inputs(110, None))
+        self.assertEqual(result.completeness, 'stock_only')
+        self.assertIsNone(result.excess_return)
+        result = evaluate_observations(*self.inputs(None, 110))
+        self.assertEqual(result.completeness, 'not_evaluable')
+        self.assertIsNone(result.stock_return)
+        self.assertIsNotNone(result.benchmark_return)
+        for amount in (0, -1, float('nan'), float('inf'), True, '100'):
+            with self.assertRaises((ValueError, TypeError)):
+                evaluate_observations(*self.inputs(amount))
+        args = list(self.inputs())
+        args[1] = replace(args[1], stock=replace(args[1].stock, price=0))
+        with self.assertRaises(ValueError): evaluate_observations(*args)
+
+    def test_identity_time_basis_and_revision_pinning(self):
+        from src.evaluation_engine import evaluate_observations
+        args = self.inputs()
+        for bad in (replace(args[2], enrollment_id='other'),
+                    replace(args[2], point='reference'),
+                    replace(args[2], stock=replace(args[2].stock, currency='OTHER')),
+                    replace(args[2], stock=replace(args[2].stock, price_type='open'))):
+            with self.assertRaises(ValueError): evaluate_observations(args[0], args[1], bad, args[3])
+        with self.assertRaises(ValueError): evaluate_observations(args[0], args[1], args[2], replace(args[3], ticker='OTHER'))
+        early = EvaluationObservation('early', 'enroll', 'endpoint', '2026-01-03T20:00:00Z', '2026-01-04T00:00:00Z', missing_reason='missing')
+        with self.assertRaises(ValueError): evaluate_observations(args[0], args[1], early, args[3])
+        revised = replace(args[2], observation_id='revision', supersedes_id='endpoint', revision_reason='corrected source')
+        self.assertEqual(evaluate_observations(args[0], args[1], revised, args[3]).endpoint_observation_id, 'revision')
+
+    def test_aggregate_denominators_and_missing(self):
+        from src.evaluation_engine import evaluate_observations, aggregate_evaluations
+        results = []
+        for i in range(10):
+            args = list(self.inputs(110, 100 if i < 3 else 120 if i == 3 else None))
+            identity = 'enroll-' + str(i)
+            args[0] = replace(args[0], enrollment_id=identity)
+            args[1] = replace(args[1], enrollment_id=identity)
+            args[2] = replace(args[2], enrollment_id=identity)
+            results.append(evaluate_observations(*args))
+        args = list(self.inputs(None, 110))
+        results.append(evaluate_observations(*args))
+        summary = aggregate_evaluations(results)
+        self.assertEqual(summary['evaluated_count'], 10)
+        self.assertEqual(summary['unevaluated_count'], 1)
+        self.assertEqual(summary['benchmark_count'], 4)
+        self.assertEqual(summary['benchmark_outperformance_rate'], .75)
+        self.assertEqual(summary['positive_return_rate'], 1)
+        self.assertAlmostEqual(summary['average_stock_return'], .1)
+        self.assertAlmostEqual(summary['median_stock_return'], .1)
+        self.assertAlmostEqual(summary['average_benchmark_return'], .05)
+        self.assertAlmostEqual(summary['median_excess_return'], .1)
+        self.assertIsNone(aggregate_evaluations([])['positive_return_rate'])
+        with self.assertRaises(ValueError): aggregate_evaluations(results + [results[0]])
+        different = replace(results[0], enrollment=replace(results[0].enrollment, enrollment_id='different', horizon=ACTIVE_HORIZONS[1]))
+        with self.assertRaises(ValueError): aggregate_evaluations([results[0], different])
+
+    def test_pure_no_io_and_legacy_unchanged(self):
+        from src.evaluation_engine import evaluate_observations, aggregate_evaluations
+        from copy import deepcopy
+        args = self.inputs()
+        legacy = outcome()
+        before = deepcopy((args, legacy))
+        with patch('sqlite3.connect', side_effect=AssertionError('No DB')), patch('socket.socket.connect', side_effect=AssertionError('No network')):
+            aggregate_evaluations([evaluate_observations(*args)])
+        self.assertEqual((args, legacy), before)
