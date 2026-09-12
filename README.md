@@ -262,7 +262,8 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7A Market Data Foundation — COMPLETE
 - V0.7B Deterministic Technical Features — COMPLETE
 - V0.7C Technical Snapshot & Evidence Catalog — COMPLETE
-- V0.7D Technical Analyst & Short-Term Signal Contract — next
+- V0.7D Technical Analyst & Short-Term Signal Contract — COMPLETE
+- V0.7E Technical Signal Persistence — next
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
 performance is claimed.
@@ -280,3 +281,7 @@ interpretation are added. See [technical features](docs/V0_7_TECHNICAL_FEATURES.
 V0.7C packages matching raw market data and features into a bounded, versioned technical
 evidence catalog with stable local IDs and explicit missing values. No Technical Analyst
 or signals are implemented. See [technical evidence](docs/V0_7_TECHNICAL_EVIDENCE.md).
+
+V0.7D adds an explicit evidence-only Technical Analyst through the existing OpenAI client.
+Its cited BULLISH/NEUTRAL/BEARISH research signals have one declared horizon; they are
+not trades and are not yet persisted or evaluated. See [technical analyst](docs/V0_7_TECHNICAL_ANALYST.md).

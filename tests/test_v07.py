@@ -428,3 +428,120 @@ class TechnicalEvidenceTests(unittest.TestCase):
         catalog = build_technical_evidence_catalog(build_technical_research_snapshot(empty,build_technical_feature_snapshot(empty)))
         self.assertIsNone(catalog.items[0].value)
         self.assertEqual(catalog.items[0].unavailable_reason,'NO_COMPLETED_BARS')
+
+
+class TechnicalAnalystTests(unittest.TestCase):
+    def fixture(self, size=50):
+        from src.technical_features import build_technical_feature_snapshot
+        from src.technical_evidence import build_technical_research_snapshot, build_technical_evidence_catalog
+        data = TechnicalFeatureTests().fixture(list(range(100,100+size)))
+        snapshot = build_technical_research_snapshot(data,build_technical_feature_snapshot(data))
+        return snapshot,build_technical_evidence_catalog(snapshot)
+
+    def output(self,catalog,signal='NEUTRAL'):
+        ids = {i.label:i.evidence_id for i in catalog.items}
+        statement = lambda text: {'text':text,'evidence_ids':[ids['momentum_5']]}
+        return dict(signal=signal,confidence=60,
+            summary=statement('The near-term evidence is mixed.'),
+            thesis=statement('momentum_5 informs this interpretation.'),
+            supporting_evidence_ids=[ids['momentum_5']],conflicting_evidence_ids=[],
+            confirmation_conditions=[statement('The interpretation strengthens if momentum_5 remains positive.')],
+            invalidation_conditions=[statement('A reversal in momentum_5 would undermine the interpretation.')],
+            risk_notes=[statement('Recent momentum may not persist.')],
+            missing_evidence_ids=[i.evidence_id for i in catalog.items if i.value is None],
+            missing_data_acknowledgement='Longer trend evidence is incomplete.')
+
+    def run_output(self,output,snapshot=None,catalog=None,horizon=None):
+        from src.technical_analyst import analyze_technical_snapshot,HORIZONS
+        if snapshot is None: snapshot,catalog=self.fixture()
+        with patch('src.openai_client.request_text',return_value=json.dumps(output)) as request:
+            result=analyze_technical_snapshot(snapshot,catalog,horizon or HORIZONS[0])
+            request.assert_called_once()
+            sent=json.loads(request.call_args.kwargs['input'])
+            self.assertNotIn('bars',sent['technical_evidence'])
+            self.assertTrue(request.call_args.kwargs['text']['format']['strict'])
+            return result
+
+    def test_valid_signals_horizons_and_trusted_provenance(self):
+        from src.technical_analyst import HORIZONS
+        snapshot,catalog=self.fixture()
+        for signal in ('BULLISH','NEUTRAL','BEARISH'):
+            for horizon in HORIZONS:
+                result=self.run_output(self.output(catalog,signal),snapshot,catalog,horizon)
+                self.assertEqual(result.analysis.signal,signal)
+                self.assertEqual(result.horizon,horizon)
+                self.assertEqual(result.provenance,catalog.provenance)
+                self.assertEqual(result.analyst_methodology_version,'technical-analyst-v1')
+                with self.assertRaises(FrozenInstanceError): result.horizon='other'
+        full,full_catalog=self.fixture(200)
+        for confidence in (0,100):
+            output=self.output(full_catalog);output['confidence']=confidence
+            self.assertEqual(self.run_output(output,full,full_catalog).analysis.confidence,confidence)
+
+    def test_invalid_confidence_enum_and_provenance_injection(self):
+        _,catalog=self.fixture()
+        for key,value in [('confidence',-1),('confidence',101),('confidence',1.5),('confidence',True),
+                          ('confidence',95),('signal','Hold'),('symbol','EVIL'),('horizon','other')]:
+            output=self.output(catalog);output[key]=value
+            with self.subTest(key=key,value=value),self.assertRaises(ValueError): self.run_output(output)
+
+    def test_citation_and_missing_validation(self):
+        _,catalog=self.fixture()
+        for key,value in [('supporting_evidence_ids',[]),('supporting_evidence_ids',['T999']),
+                          ('supporting_evidence_ids',['T001','T001']),('supporting_evidence_ids',['T006']),
+                          ('conflicting_evidence_ids',['T999']),('missing_evidence_ids',[])]:
+            output=self.output(catalog);output[key]=value
+            with self.assertRaises(ValueError): self.run_output(output)
+        output=self.output(catalog);output['conflicting_evidence_ids']=['T001']
+        self.assertEqual(self.run_output(output).analysis.conflicting_evidence_ids,('T001',))
+        output['conflicting_evidence_ids']=output['supporting_evidence_ids']
+        with self.assertRaises(ValueError): self.run_output(output)
+
+    def test_hallucinations_and_obvious_contradictions(self):
+        _,catalog=self.fixture()
+        for text in ('Support is $193.47.', 'Resistance is nearby.', 'RSI is 71.3.',
+                     'SMA is 123.4.', 'The current quote is favorable.',
+                     'A future breakout already occurred.', 'Price is above sma_200.',
+                     'The technical setup is strongly bearish.'):
+            output=self.output(catalog,'BULLISH');output['thesis']['text']=text
+            with self.subTest(text=text),self.assertRaises(ValueError): self.run_output(output)
+        output=self.output(catalog);output['thesis']['evidence_ids']=['T999']
+        with self.assertRaises(ValueError): self.run_output(output)
+
+    def test_preflight_no_requests(self):
+        from src.technical_analyst import analyze_technical_snapshot,HORIZONS
+        snapshot,catalog=self.fixture()
+        tiny,tiny_catalog=self.fixture(1)
+        wrong=replace(catalog,provenance=replace(catalog.provenance,symbol='OTHER'))
+        with patch('src.openai_client.request_text') as request:
+            for s,c,h in ((tiny,tiny_catalog,HORIZONS[0]),(snapshot,catalog,'one day'),
+                          (snapshot,wrong,HORIZONS[0]),
+                          (snapshot,replace(catalog,methodology_version='future'),HORIZONS[0]),
+                          (snapshot,replace(catalog,items=catalog.items+(catalog.items[0],)),HORIZONS[0])):
+                with self.assertRaises(ValueError): analyze_technical_snapshot(s,c,h)
+            request.assert_not_called()
+
+    def test_conditions_and_no_fallback(self):
+        from src.technical_analyst import analyze_technical_snapshot,HORIZONS
+        snapshot,catalog=self.fixture()
+        for key in ('confirmation_conditions','invalidation_conditions'):
+            output=self.output(catalog,'BEARISH');output[key]=[]
+            with self.assertRaises(ValueError): self.run_output(output)
+        for response in ('not json','{}'):
+            with patch('src.openai_client.request_text',return_value=response) as request:
+                with self.assertRaises(ValueError): analyze_technical_snapshot(snapshot,catalog,HORIZONS[0])
+                self.assertEqual(request.call_count,1)
+        with patch('src.openai_client.request_text',side_effect=RuntimeError('timeout')) as request:
+            with self.assertRaises(RuntimeError): analyze_technical_snapshot(snapshot,catalog,HORIZONS[0])
+            self.assertEqual(request.call_count,1)
+
+    def test_packet_only_no_provider_and_prompt_boundaries(self):
+        from src.technical_analyst import INSTRUCTIONS
+        _,catalog=self.fixture()
+        with patch('socket.socket.connect',side_effect=AssertionError('No network')), \
+             patch('src.alpha_vantage_client._request',side_effect=AssertionError('No market calls')):
+            result=self.run_output(self.output(catalog))
+        self.assertEqual(result.analysis.signal,'NEUTRAL')
+        for phrase in ('not a trader','No outside/current market knowledge','not neutral','FUTURE',
+                       'No support/resistance','NO numeric literals','never mechanically map'):
+            self.assertIn(phrase,INSTRUCTIONS)
