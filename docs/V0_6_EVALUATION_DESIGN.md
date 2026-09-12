@@ -268,3 +268,57 @@ Ready to begin contract implementation under this design; **not** ready to claim
 ### Step 3 implementation note
 
 The pure `evaluation_engine` returns transient arithmetic results tied to explicitly selected reference/endpoint observation IDs. Step 2 lacks resolved calendar targets: results therefore expose `horizon_resolution_verified=False` and must not be presented as certified horizon evaluations. Stored methodology and horizon are retained without caller overrides. Step 3's explicit strict-positive-price requirement rejects zero endpoints as well as zero references; legacy DecisionOutcome's zero-end behavior is unchanged. Aggregate benchmark metrics use stock/benchmark pairs only, reject duplicate enrollment results and mixed horizon/methodology/time-provenance cohorts, and describe supplied results rather than full enrollment coverage. Calendar verification and reporting integration remain later work.
+
+### Step 4 implementation — offline calendar and derived targets
+
+This implementation supersedes the initial proposed calendar-dependency deferral above.
+`exchange_calendars==4.13.2` is the sole calendar dependency, pinned in requirements;
+its local **XNYS** schedule covers the project's explicitly verified US-listed equities
+and ETFs using compatible regular sessions. No runtime calendar downloads occur.
+The small `market_calendar` adapter has fixed 1990–2050 coverage, UTC-aware session
+opens/closes and `America/New_York` interpretation. Out-of-range dates are unresolved.
+Future emergency closures are not guaranteed by a published schedule. Upgrading the
+calendar requires reviewing schedules and assigning compatible new provenance, not
+silently recalculating an older enrollment with another package version.
+
+The retry authorizes **NEXT_COMPLETED_REGULAR_CLOSE**, version
+`next-completed-regular-close-v1`, under **fundamental-price-v2**. This differs from
+v1's next-full-session rule; `close_methodology()` explicitly constructs the new
+snapshot. Existing defaults and persisted v1 enrollments remain unchanged and are
+unsupported by this resolver. Exact methodology snapshots, including calendar version,
+are checked rather than replacing historical versions with current constants.
+
+Reference is the first regular close strictly after preserved, verified analysis
+completion: before/during a session uses its future close, equality at close advances
+to the next session, and weekends/holidays advance to the next session. This is an
+observation proxy, not an execution guarantee or information known at decision time.
+It never updates a DecisionRecord. Legacy save/start timestamps do not establish
+completion; missing verified availability remains unresolved. Enrollment at/after
+that reference remains unresolved for prospective evaluation; the reference is not
+shifted forward to disguise late registration.
+
+Active horizons remain **90 and 365 calendar days** added to the reference's local
+session date. The endpoint is the first session on/after that nominal date. Both stock
+and VOO use this single window. Provider missing bars cannot move it. `as_of` is an
+explicit aware datetime and only controls close availability/eligibility. Equality
+with the actual close counts as completed; provider publication latency is a later
+retrieval concern. Half-days use real early closes. DST uses timezone/calendar rules.
+Session labels mean before open, open-inclusive/close-exclusive regular session,
+after close, or non-session MARKET_CLOSED; they do not assert extended-hours venues
+are operating at every such instant.
+
+`ObservationTarget` is transient and retains the enrollment/methodology, reference,
+nominal and actual target, resolution version and availability. Explicit caller-verified
+market scope is required; ticker syntax is not an exchange classifier. Unsupported
+assets/policies fail closed. No observations, tables, prices or return integrations
+are created. Step 3's arithmetic results still do not certify resolved horizons;
+linking retrieved observations to these exact targets belongs to the subsequent step.
+
+Price basis remains **regular-session split-consistent price return excluding cash
+dividends**, not total shareholder return. A provider's generic adjusted close is not
+acceptable unless its documented semantics satisfy this exact split-only basis for
+both symbols and dates; dividend-adjusted data must not be silently substituted.
+Splits must be consistently reflected, while mergers/symbol history and total-return
+reinvestment remain unsupported. Step 5 must validate provider capabilities before
+retrieval is integrated. The calendar infrastructure can later support trading-session
+horizons/completed intraday bars; no V0.7 horizons, indicators or signals are activated.

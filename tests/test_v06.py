@@ -234,3 +234,112 @@ class EvaluationEngineTests(unittest.TestCase):
         with patch('sqlite3.connect', side_effect=AssertionError('No DB')), patch('socket.socket.connect', side_effect=AssertionError('No network')):
             aggregate_evaluations([evaluate_observations(*args)])
         self.assertEqual((args, legacy), before)
+
+
+class ObservationResolutionTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from src.market_calendar import USMarketCalendar
+        cls.calendar = USMarketCalendar()
+
+    def resolve(self, instant, as_of='2027-01-01T00:00:00+00:00', **changes):
+        from datetime import datetime
+        from src.observation_resolution import resolve_observation_target, close_methodology, SUPPORTED_MARKET
+        item = enrollment(enrolled_at=instant, decision_available_at=instant,
+                          time_provenance='captured_analysis_completion',
+                          methodology=close_methodology(), **changes)
+        return resolve_observation_target(item, datetime.fromisoformat(as_of),
+                                          market=SUPPORTED_MARKET, calendar=self.calendar)
+
+    def test_aware_time_and_dst(self):
+        from datetime import datetime
+        from src.market_calendar import aware_utc
+        self.assertEqual(aware_utc(datetime.fromisoformat('2025-03-10T10:00:00-04:00')).hour, 14)
+        with self.assertRaises(ValueError):
+            aware_utc(datetime(2025, 1, 1))
+        self.assertEqual(self.resolve('2025-03-07T10:00:00-05:00').reference.closes_at.hour, 21)
+        self.assertEqual(self.resolve('2025-03-10T10:00:00-04:00').reference.closes_at.hour, 20)
+
+    def test_classifications_and_reference_boundaries(self):
+        from datetime import datetime
+        for instant, status, reference in [
+            ('2025-03-10T08:00:00-04:00', 'PRE_MARKET', '2025-03-10'),
+            ('2025-03-10T10:00:00-04:00', 'REGULAR_SESSION', '2025-03-10'),
+            ('2025-03-10T17:00:00-04:00', 'AFTER_HOURS', '2025-03-11'),
+            ('2025-03-10T16:00:00-04:00', 'AFTER_HOURS', '2025-03-11'),
+            ('2025-03-08T12:00:00-05:00', 'MARKET_CLOSED', '2025-03-10'),
+            ('2025-03-09T12:00:00-04:00', 'MARKET_CLOSED', '2025-03-10'),
+            ('2025-07-04T12:00:00-04:00', 'MARKET_CLOSED', '2025-07-07'),
+            ('2021-07-05T12:00:00-04:00', 'MARKET_CLOSED', '2021-07-06')]:
+            with self.subTest(instant=instant):
+                self.assertEqual(self.calendar.classify(datetime.fromisoformat(instant)), status)
+                self.assertEqual(str(self.resolve(instant).reference.date), reference)
+
+    def test_horizons_roll_forward_and_preserve_contract(self):
+        # March 10 + 90 days is Sunday June 8; April 7 + 90 is Sunday July 6.
+        for instant, nominal, target in [
+            ('2025-03-10T10:00:00-04:00', '2025-06-08', '2025-06-09'),
+            ('2025-04-07T10:00:00-04:00', '2025-07-06', '2025-07-07'),
+            ('2025-04-05T12:00:00-04:00', '2025-07-06', '2025-07-07')]:
+            result = self.resolve(instant)
+            self.assertEqual(str(result.nominal_target_date), nominal)
+            self.assertEqual(str(result.target.date), target)
+            self.assertEqual(result.enrollment.horizon, ACTIVE_HORIZONS[0])
+        result = self.resolve('2024-07-04T12:00:00-04:00', horizon=ACTIVE_HORIZONS[1])
+        self.assertEqual(str(result.nominal_target_date), '2025-07-05')
+        self.assertEqual(str(result.target.date), '2025-07-07')
+        # A 365-day target lands on Independence Day itself.
+        result = self.resolve('2023-07-05T10:00:00-04:00', horizon=ACTIVE_HORIZONS[1])
+        self.assertEqual(str(result.nominal_target_date), '2024-07-04')
+        self.assertEqual(str(result.target.date), '2024-07-05')
+
+    def test_half_day_and_no_lookahead(self):
+        result = self.resolve('2025-11-28T10:00:00-05:00', '2025-11-28T12:30:00-05:00')
+        self.assertEqual(result.reference.closes_at.hour, 18)
+        self.assertFalse(result.reference_available)
+        later = self.resolve('2025-11-28T10:00:00-05:00', '2025-11-28T13:00:00-05:00')
+        self.assertTrue(later.reference_available)
+        self.assertEqual(result.target, later.target)
+        exact = self.resolve('2025-11-28T13:00:00-05:00')
+        self.assertEqual(str(exact.reference.date), '2025-12-01')
+
+    def test_eligibility_as_of_only(self):
+        from datetime import timedelta
+        first = self.resolve('2024-11-27T10:00:00-05:00', horizon=ACTIVE_HORIZONS[1])
+        self.assertEqual(str(first.target.date), '2025-11-28')
+        before = self.resolve('2024-11-27T10:00:00-05:00',
+            (first.target.closes_at - timedelta(seconds=1)).isoformat(), horizon=ACTIVE_HORIZONS[1])
+        after = self.resolve('2024-11-27T10:00:00-05:00',
+            first.target.closes_at.isoformat(), horizon=ACTIVE_HORIZONS[1])
+        self.assertEqual(before.eligibility, 'NOT_YET_ELIGIBLE')
+        self.assertEqual(after.eligibility, 'ELIGIBLE')
+        self.assertEqual(before.target, after.target)
+        self.assertEqual(first, self.resolve('2024-11-27T10:00:00-05:00', horizon=ACTIVE_HORIZONS[1]))
+
+    def test_unsupported_legacy_and_late_enrollment(self):
+        from datetime import datetime, timezone
+        from src.observation_resolution import resolve_observation_target, close_methodology, SUPPORTED_MARKET
+        now = datetime(2027, 1, 1, tzinfo=timezone.utc)
+        legacy = enrollment(methodology=close_methodology())
+        self.assertEqual(resolve_observation_target(legacy, now, market=SUPPORTED_MARKET).eligibility, 'UNRESOLVABLE')
+        self.assertEqual(resolve_observation_target(legacy, now, market='CRYPTO').eligibility, 'UNSUPPORTED')
+        self.assertEqual(resolve_observation_target(enrollment(), now, market=SUPPORTED_MARKET).eligibility, 'UNSUPPORTED')
+        valid = self.resolve('2025-03-10T10:00:00-04:00')
+        late = replace(valid.enrollment, enrolled_at='2025-03-11T21:00:00Z')
+        result = resolve_observation_target(late, now, market=SUPPORTED_MARKET)
+        self.assertEqual(result.eligibility, 'UNRESOLVABLE')
+        self.assertEqual(result.target, valid.target)
+        with self.assertRaises(ValueError):
+            resolve_observation_target(legacy, datetime(2027, 1, 1), market=SUPPORTED_MARKET)
+
+    def test_offline_pure_shared_window_and_provenance(self):
+        import socket
+        from src.observation_resolution import close_methodology
+        with patch.object(socket.socket, 'connect', side_effect=AssertionError('Network forbidden')), \
+             patch('sqlite3.connect', side_effect=AssertionError('Database forbidden')):
+            result = self.resolve('2025-03-10T10:00:00-04:00')
+            self.assertEqual(result.enrollment.methodology, close_methodology())
+            self.assertEqual(result.enrollment.methodology.benchmark_symbol, 'VOO')
+            self.assertFalse(hasattr(result, 'benchmark_target'))
+            self.assertFalse(hasattr(result, 'prices'))
+            self.assertEqual(result, self.resolve('2025-03-10T10:00:00-04:00'))
