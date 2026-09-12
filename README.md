@@ -263,7 +263,8 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7B Deterministic Technical Features — COMPLETE
 - V0.7C Technical Snapshot & Evidence Catalog — COMPLETE
 - V0.7D Technical Analyst & Short-Term Signal Contract — COMPLETE
-- V0.7E Technical Signal Persistence — next
+- V0.7E Technical Signal Persistence — COMPLETE
+- V0.7F Technical Signal Evaluation Integration — next
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
 performance is claimed.
@@ -284,4 +285,7 @@ or signals are implemented. See [technical evidence](docs/V0_7_TECHNICAL_EVIDENC
 
 V0.7D adds an explicit evidence-only Technical Analyst through the existing OpenAI client.
 Its cited BULLISH/NEUTRAL/BEARISH research signals have one declared horizon; they are
-not trades and are not yet persisted or evaluated. See [technical analyst](docs/V0_7_TECHNICAL_ANALYST.md).
+not trades and are not yet evaluated. See [technical analyst](docs/V0_7_TECHNICAL_ANALYST.md).
+
+V0.7E adds explicit immutable SQLite signal records with the compact historical evidence packet.
+No automatic save or evaluation occurs. See [technical signal persistence](docs/V0_7_TECHNICAL_SIGNAL_PERSISTENCE.md).

@@ -545,3 +545,106 @@ class TechnicalAnalystTests(unittest.TestCase):
         for phrase in ('not a trader','No outside/current market knowledge','not neutral','FUTURE',
                        'No support/resistance','NO numeric literals','never mechanically map'):
             self.assertIn(phrase,INSTRUCTIONS)
+
+
+class TechnicalSignalPersistenceTests(unittest.TestCase):
+    def fixture(self, direction='NEUTRAL', horizon=None):
+        from src.technical_signal_store import create_technical_signal_record
+        helper = TechnicalAnalystTests()
+        snapshot, catalog = helper.fixture()
+        signal = helper.run_output(helper.output(catalog, direction), snapshot, catalog, horizon)
+        record = create_technical_signal_record(signal, catalog,
+            created_at='2025-03-11T09:00:00-04:00', record_id='test-record')
+        return record, signal, catalog
+
+    def test_roundtrip_all_vocabulary_horizons_and_evidence(self):
+        from src.technical_signal_store import TechnicalSignalStore
+        from src.technical_analyst import HORIZONS
+        from dataclasses import asdict
+        import tempfile
+        for direction in ('BULLISH', 'NEUTRAL', 'BEARISH'):
+            for horizon in HORIZONS:
+                record, signal, catalog = self.fixture(direction, horizon)
+                with tempfile.TemporaryDirectory() as directory:
+                    store = TechnicalSignalStore(directory + '/history.db'); store.initialize()
+                    store.save_technical_signal(record)
+                    loaded = store.get_technical_signal(record.record_id)
+                    self.assertEqual(loaded, record)
+                    self.assertEqual(loaded.evidence_packet, json.loads(json.dumps(catalog.to_packet())))
+                    self.assertEqual(loaded.signal['analysis']['signal'], direction)
+                    self.assertEqual(loaded.signal['horizon'], horizon)
+                    self.assertEqual(loaded.created_at, '2025-03-11T13:00:00.000000Z')
+                    self.assertEqual(store.list_technical_signals('test'), [record])
+                    self.assertIsNone(store.get_technical_signal('absent'))
+
+    def test_duplicate_immutable_later_record_and_detached_reads(self):
+        from src.technical_signal_store import TechnicalSignalStore
+        from dataclasses import replace
+        import tempfile, sqlite3
+        record, _, _ = self.fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            store=TechnicalSignalStore(directory+'/db');store.initialize()
+            store.save_technical_signal(record)
+            with self.assertRaises(sqlite3.IntegrityError): store.save_technical_signal(record)
+            later=replace(record,record_id='later',created_at='2025-03-12T13:00:00Z')
+            store.save_technical_signal(later)
+            self.assertEqual(store.list_technical_signals(),[later,record])
+            detached=store.get_technical_signal(record.record_id).signal
+            detached['analysis']['confidence']=0
+            self.assertEqual(store.get_technical_signal(record.record_id),record)
+            with self.assertRaises(FrozenInstanceError): record.record_id='other'
+            self.assertFalse(hasattr(store,'update_signal'))
+
+    def test_corrupted_record_rejected(self):
+        from src.technical_signal_store import TechnicalSignalRecord
+        from dataclasses import replace
+        record,_,_=self.fixture()
+        for key,value in [('signal','BUY'),('confidence',101),('confidence',True)]:
+            data=record.signal;data['analysis'][key]=value
+            with self.assertRaises(ValueError): replace(record,signal_json=json.dumps(data))
+        data=record.signal;data['horizon']='short term'
+        with self.assertRaises(ValueError): replace(record,signal_json=json.dumps(data))
+        for kwargs in ({'signal_json':'{'},{'created_at':'2025-01-01'}, {'record_version':'future'}):
+            with self.assertRaises(ValueError): replace(record,**kwargs)
+        packet=record.evidence_packet;packet['items'][0]['value']=None
+        with self.assertRaises(ValueError): replace(record,evidence_json=json.dumps(packet))
+
+    def test_legacy_database_atomic_failure_and_separation(self):
+        from src.technical_signal_store import TechnicalSignalStore
+        from src.evaluation_store import EvaluationStore
+        import tempfile, sqlite3
+        record,_,_=self.fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            path=directory+'/db';legacy=EvaluationStore(path);legacy.initialize()
+            from test_v03 import record as legacy_record, outcome as legacy_outcome
+            legacy.save_decision(legacy_record()); legacy.save_outcome(legacy_outcome())
+            with sqlite3.connect(path) as conn:
+                before=list(conn.iterdump())
+            store=TechnicalSignalStore(path);store.initialize();store.initialize()
+            with sqlite3.connect(path) as conn:
+                conn.execute("CREATE TRIGGER fail_signal BEFORE INSERT ON technical_signals BEGIN SELECT RAISE(ABORT, 'test failure'); END")
+            with self.assertRaises(sqlite3.IntegrityError):store.save_technical_signal(record)
+            self.assertEqual(store.list_technical_signals(),[])
+            with sqlite3.connect(path) as conn:conn.execute('DROP TRIGGER fail_signal')
+            store.save_technical_signal(record)
+            with sqlite3.connect(path) as conn:
+                for table in ('decisions','decision_outcomes','evaluation_enrollments','evaluation_observations'):
+                    self.assertEqual(conn.execute('SELECT count(*) FROM '+table).fetchone()[0],
+                                     1 if table in ('decisions','decision_outcomes') else 0)
+                after=list(conn.iterdump())
+            for line in before:
+                if line not in ('BEGIN TRANSACTION;','COMMIT;'):self.assertIn(line,after)
+
+    def test_no_recalculation_and_opaque_methodology_preserved(self):
+        from src.technical_signal_store import TechnicalSignalStore
+        from dataclasses import replace
+        import tempfile
+        record,_,_=self.fixture()
+        data=record.signal;data['analyst_methodology_version']='historical-custom-v0'
+        record=replace(record,signal_json=json.dumps(data))
+        with tempfile.TemporaryDirectory() as directory, \
+             patch('src.openai_client.request_text',side_effect=AssertionError('network')), \
+             patch('src.technical_evidence.build_technical_evidence_catalog',side_effect=AssertionError('rebuild')):
+            store=TechnicalSignalStore(directory+'/db');store.initialize()
+            store.save_technical_signal(record)
+            self.assertEqual(store.get_technical_signal(record.record_id),record)
