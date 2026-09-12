@@ -57,7 +57,7 @@ def get_news_sentiment(ticker: str) -> dict:
     return _request("NEWS_SENTIMENT", tickers=ticker, limit=10, sort="LATEST")
 
 
-def _request(function: str, ticker: str | None = None, **params: str | int) -> dict:
+def _request(function: str, ticker: str | None = None, *, reject_duplicate_keys: bool = False, **params: str | int) -> dict:
     api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     if not api_key or not api_key.strip():
         raise RuntimeError("ALPHA_VANTAGE_API_KEY must be configured.")
@@ -68,7 +68,8 @@ def _request(function: str, ticker: str | None = None, **params: str | int) -> d
     try:
         _pace_request()
         with urlopen(f"https://www.alphavantage.co/query?{query}", timeout=30) as response:
-            data = json.load(response)
+            data = (json.load(response, object_pairs_hook=_unique_json_object)
+                    if reject_duplicate_keys else json.load(response))
     except HTTPError as error:
         raise RuntimeError(f"Alpha Vantage HTTP error: {error.code}.") from None
     except (URLError, OSError, HTTPException):
@@ -102,3 +103,18 @@ def _request(function: str, ticker: str | None = None, **params: str | int) -> d
 def get_daily_adjusted(ticker: str) -> dict:
     """One full historical series supplies both exact evaluation sessions; no retries."""
     return _request('TIME_SERIES_DAILY_ADJUSTED', ticker, outputsize='full')
+
+
+def _unique_json_object(pairs):
+    """Reject duplicates before a dict can silently discard an earlier daily row."""
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('Duplicate JSON key.')
+        result[key] = value
+    return result
+
+
+def get_daily_raw(ticker: str) -> dict:
+    """V0.7 raw OHLCV only. Full history; strict decoding; existing pacing/no retries."""
+    return _request('TIME_SERIES_DAILY', ticker, outputsize='full', reject_duplicate_keys=True)

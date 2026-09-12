@@ -258,7 +258,15 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.4 Multi-Agent System — COMPLETE
 - V0.5 Interface — COMPLETE
 - V0.6 Evaluation Infrastructure — COMPLETE
-- V0.7 Technical & Short-Term Research — NEXT
+- V0.7 Technical & Short-Term Research — IN PROGRESS
+- V0.7A Market Data Foundation — current (implemented)
+- V0.7B Deterministic Technical Features — next
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
 performance is claimed.
+
+
+V0.7A adds validated raw daily OHLCV, explicit as-of/completed-session filtering,
+provenance and minimum-history checks. It does not add indicators or signals, and a
+current provider response does not establish historical publication vintages.
+See the [market-data foundation](docs/V0_7_MARKET_DATA_FOUNDATION.md).

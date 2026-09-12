@@ -46,3 +46,19 @@ class USMarketCalendar:
         if instant < session.closes_at:
             return 'REGULAR_SESSION'
         return 'AFTER_HOURS'
+
+    def completed_sessions(self, start: date, as_of: datetime) -> tuple[date, ...]:
+        """Calendar dates completed by explicit time; no weekday approximations."""
+        as_of = aware_utc(as_of)
+        end = as_of.astimezone(self.timezone).date()
+        labels = self._calendar.sessions_in_range(start.isoformat(), end.isoformat())
+        return tuple(label.date() for label in labels
+                     if self._calendar.session_close(label).to_pydatetime() <= as_of)
+
+    def last_completed_session(self, as_of: datetime) -> date | None:
+        as_of = aware_utc(as_of)
+        day = as_of.astimezone(self.timezone).date()
+        label = self._calendar.date_to_session(day.isoformat(), direction='previous')
+        if self._calendar.session_close(label).to_pydatetime() > as_of:
+            label = self._calendar.previous_session(label)
+        return label.date()
