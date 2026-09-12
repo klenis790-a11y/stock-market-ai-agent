@@ -367,3 +367,35 @@ Manual validation on 2026-09-12: one sequence, two successful requests (AAPL and
 verified exact 2026-01-02 and 2026-04-02 adjusted-close fields after calendar eligibility.
 No persistence, retries, or OpenAI calls. This validates field availability/shape under
 the configured entitlement, not independent reconstruction of provider adjustments.
+
+### Step 6 explicit dashboard workflow and atomic collection
+
+Decision History now offers controlled 90/365-calendar-day enrollment for the selected
+preserved decision. Duplicate supported enrollments are reused. Opening or selecting
+history does not initialize evaluation tables; only explicit enrollment does. No
+Research save action auto-enrolls. Legacy DecisionRecord timestamps do not reliably
+identify completed analysis availability: enrollments created from these records retain
+`legacy_time_unverified`, visibly unresolved. They cannot collect. This step does not
+invent completion metadata, backfill timestamps, or relax prospective eligibility.
+Supported preexisting enrollments with captured completion can use collection after
+the user confirms compatible US stock/benchmark market scope. A later approved capture
+workflow is needed to make new dashboard research prospectively enrollable.
+
+Collection is button-only and persisted observations replace the action with factual
+read views. The existing schema represents one logical evaluation window with TWO
+rows (reference and endpoint), not one combined row. Step 6 replaces separate commits
+with one atomic batch transaction using the existing store validation. A failure on
+either insert rolls back both. Failed/missing required stock inputs create zero rows;
+a missing benchmark intentionally creates a stock-only pair in the same transaction.
+Older partial/revised records still require review, never an automatic repair. No
+DecisionRecord or DecisionOutcome is changed, and no schema migration is introduced.
+
+Performance has a separate V0.6 section. It checks resolved dates against stored point
+roles, displays retrieved adjusted prices and derived provider-adjusted returns, and
+uses Step 3 aggregates only within identical horizon/methodology/time-provenance
+cohorts. Legacy outcomes remain independently readable and are never pooled into V0.6
+metrics. Counts and unavailable values are explicit, benchmark denominators remain
+paired, and no significance or trading-return claim is made. The pure engine's
+`horizon_resolution_verified=False` contract is unchanged; workflow checks are not an
+upgrade of historical arithmetic results to new persisted certifications. Read-only
+rendering performs no collection, enrollment, OpenAI calls or database writes.

@@ -129,7 +129,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio', 'src.dashboard.performance_adapter'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio', 'src.dashboard.performance_adapter', 'src.dashboard.evaluation'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 

@@ -106,3 +106,5 @@ def render():
         st.info('Selected decision is unavailable.')
         return
     display_decision(record, data.outcomes)
+    from src.dashboard.evaluation import history_controls
+    history_controls(query[0], record)

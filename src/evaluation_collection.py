@@ -47,11 +47,12 @@ def normalize_adjusted(payload, symbol, session, retrieved_at):
 
 
 def collect_evaluation_observations(store, enrollment, as_of, *, market, clock=now_utc):
-    """Return reference/endpoint facts, storing each once through EvaluationStore.
+    """Return reference/endpoint facts, storing the pair atomically.
 
     An existing complete pair is returned without requests. Partial prior persistence
     or revisions raise before retrieval; no implicit repair/refresh occurs. Provider
-    failures become missing facts with fixed safe reasons, never raw payload messages.
+    failures for stock abort without writes; benchmark failures become intentional
+    missing facts with fixed safe reasons, never raw payload messages.
     """
     if enrollment.methodology != adjusted_close_methodology():
         raise ValueError('Unsupported adjusted-price policy.')
@@ -92,7 +93,11 @@ def collect_evaluation_observations(store, enrollment, as_of, *, market, clock=n
                 'Alpha Vantage / TIME_SERIES_DAILY_ADJUSTED',
                 '5. adjusted close / ' + ADJUSTED_PRICE_POLICY, ADJUSTMENT_BASIS,
                 enrollment.methodology.currency))
+        if symbol == enrollment.ticker and any(value is None for value in values):
+            raise ValueError('Required stock observations unavailable; nothing persisted.')
         prices[symbol] = values
+    if any(price is None for price in prices[enrollment.ticker]):
+        raise ValueError('Required stock observations unavailable; nothing persisted.')
     recorded = clock().isoformat()
     observations = []
     for index, (point, session) in enumerate(zip(('reference', 'endpoint'), sessions)):
@@ -102,8 +107,6 @@ def collect_evaluation_observations(store, enrollment, as_of, *, market, clock=n
         observations.append(EvaluationObservation(str(uuid4()), enrollment.enrollment_id, point,
             session.closes_at.isoformat(), recorded, stock, benchmark,
             'Unavailable or invalid exact-session adjusted price: ' + ', '.join(missing) if missing else None))
-    # Validation completes before either insert. Store uniqueness protects concurrent writes.
-    # Inserts use existing transactions; a storage failure propagates (never claims success).
-    for observation in observations:
-        store.save_observation(observation)
+    # Reference and endpoint are one logical collection, committed atomically.
+    store.save_observations(observations)
     return tuple(observations)

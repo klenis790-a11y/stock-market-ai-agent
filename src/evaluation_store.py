@@ -84,35 +84,46 @@ class EvaluationStore(DecisionStore):
                  item.horizon.length, item.horizon.unit, item.methodology.version, item.methodology.digest, payload))
 
     def save_observation(self, observation):
-        if not isinstance(observation, EvaluationObservation):
-            raise ValueError('EvaluationObservation required.')
-        payload = canonical_json(asdict(observation))
-        item = observation_from_json(payload)
+        self.save_observations((observation,))
+
+    def save_observations(self, observations):
+        """Atomically append a validated batch; a failed insert rolls back all rows."""
+        items = []
+        for observation in observations:
+            if not isinstance(observation, EvaluationObservation):
+                raise ValueError('EvaluationObservation required.')
+            payload = canonical_json(asdict(observation))
+            items.append((observation_from_json(payload), payload))
         with closing(self._connect()) as connection, connection:
-            row = connection.execute('SELECT payload FROM evaluation_enrollments WHERE enrollment_id = ?', (item.enrollment_id,)).fetchone()
-            if row is None:
-                raise sqlite3.IntegrityError('Observation enrollment does not exist.')
-            enrollment = enrollment_from_json(row[0])
-            if item.recorded_at < enrollment.enrolled_at:
-                raise ValueError('Observation recording cannot precede enrollment.')
-            for price, symbol in ((item.stock, enrollment.ticker), (item.benchmark, enrollment.methodology.benchmark_symbol)):
-                if price is not None and (price.symbol != symbol or price.currency != enrollment.methodology.currency
-                        or price.adjustment_policy != enrollment.methodology.adjustment_policy):
-                    raise ValueError('Price identity or adjustment basis differs from enrollment.')
-            if item.supersedes_id is not None:
-                prior = connection.execute('SELECT payload FROM evaluation_observations WHERE observation_id = ?', (item.supersedes_id,)).fetchone()
-                if prior is None:
-                    raise sqlite3.IntegrityError('Revision predecessor does not exist.')
-                prior = observation_from_json(prior[0])
-                if (prior.enrollment_id, prior.point, prior.effective_at) != (item.enrollment_id, item.point, item.effective_at) or prior.recorded_at > item.recorded_at:
-                    raise ValueError('Revision must preserve enrollment and observation point.')
-            inputs = asdict(item)
-            for key in ('observation_id', 'recorded_at', 'supersedes_id', 'revision_reason'):
-                inputs.pop(key)
-            digest = sha256(canonical_json(inputs).encode()).hexdigest()
-            connection.execute('INSERT INTO evaluation_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                (item.observation_id, item.enrollment_id, item.point, item.effective_at,
-                 item.recorded_at, item.supersedes_id, digest, payload))
+            connection.execute('BEGIN')
+            for item, payload in items:
+                self._insert_observation(connection, item, payload)
+
+    def _insert_observation(self, connection, item, payload):
+        row = connection.execute('SELECT payload FROM evaluation_enrollments WHERE enrollment_id = ?', (item.enrollment_id,)).fetchone()
+        if row is None:
+            raise sqlite3.IntegrityError('Observation enrollment does not exist.')
+        enrollment = enrollment_from_json(row[0])
+        if item.recorded_at < enrollment.enrolled_at:
+            raise ValueError('Observation recording cannot precede enrollment.')
+        for price, symbol in ((item.stock, enrollment.ticker), (item.benchmark, enrollment.methodology.benchmark_symbol)):
+            if price is not None and (price.symbol != symbol or price.currency != enrollment.methodology.currency
+                    or price.adjustment_policy != enrollment.methodology.adjustment_policy):
+                raise ValueError('Price identity or adjustment basis differs from enrollment.')
+        if item.supersedes_id is not None:
+            prior = connection.execute('SELECT payload FROM evaluation_observations WHERE observation_id = ?', (item.supersedes_id,)).fetchone()
+            if prior is None:
+                raise sqlite3.IntegrityError('Revision predecessor does not exist.')
+            prior = observation_from_json(prior[0])
+            if (prior.enrollment_id, prior.point, prior.effective_at) != (item.enrollment_id, item.point, item.effective_at) or prior.recorded_at > item.recorded_at:
+                raise ValueError('Revision must preserve enrollment and observation point.')
+        inputs = asdict(item)
+        for key in ('observation_id', 'recorded_at', 'supersedes_id', 'revision_reason'):
+            inputs.pop(key)
+        digest = sha256(canonical_json(inputs).encode()).hexdigest()
+        connection.execute('INSERT INTO evaluation_observations VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            (item.observation_id, item.enrollment_id, item.point, item.effective_at,
+             item.recorded_at, item.supersedes_id, digest, payload))
 
     def _read(self, table, sql, params, decode):
         with closing(self._connect()) as connection:

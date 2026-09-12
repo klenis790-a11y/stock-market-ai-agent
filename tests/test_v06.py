@@ -425,10 +425,9 @@ class AdjustedCollectionTests(unittest.TestCase):
             data['Time Series (Daily)']['2026-04-01'] = {'5. adjusted close': '123'}
             return data
         with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=provider):
-            reference, endpoint = self.collect()
-        self.assertIsNone(reference.benchmark)
-        self.assertIsNone(endpoint.stock)
-        self.assertTrue(endpoint.effective_at.startswith('2026-04-02'))
+            with self.assertRaises(ValueError):
+                self.collect()
+        self.assertEqual(self.store.get_observations_for_enrollment('enroll'), [])
 
     def test_normalization_rejects_bad_prices_and_payloads(self):
         from datetime import date
@@ -452,21 +451,81 @@ class AdjustedCollectionTests(unittest.TestCase):
             get_daily_adjusted('TEST')
             request.assert_called_once_with('TIME_SERIES_DAILY_ADJUSTED', 'TEST', outputsize='full')
 
-    def test_partial_persistence_is_not_silently_retried(self):
-        original = self.store.save_observation
+    def test_partial_persistence_rolls_back_atomically(self):
+        original = self.store._insert_observation
         count = 0
-        def fail_second(item):
+        def fail_second(connection, item, payload):
             nonlocal count
             count += 1
             if count == 2:
                 raise sqlite3.OperationalError('fixture write failure')
-            original(item)
+            original(connection, item, payload)
         with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=self.payload), \
-             patch.object(self.store, 'save_observation', side_effect=fail_second):
+             patch.object(self.store, '_insert_observation', side_effect=fail_second):
             with self.assertRaises(sqlite3.OperationalError):
                 self.collect()
-        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+        self.assertEqual(self.store.get_observations_for_enrollment('enroll'), [])
+        self.assertEqual(self.store.get_decision('fixture-1'), record())
+        self.assertEqual(self.store.get_outcomes_for_decision('fixture-1'), [outcome()])
+
+    def test_stock_provider_failure_has_no_rows(self):
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=RuntimeError('failure')):
             with self.assertRaises(ValueError):
                 self.collect()
+        self.assertEqual(self.store.get_observations_for_enrollment('enroll'), [])
+
+    def test_workflow_enrollment_and_read_views(self):
+        from src.dashboard import evaluation_adapter as adapter
+        from src.evaluation_models import EvaluationHorizon
+        path = str(Path(self.temp.name) / 'evaluation.db')
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            views = adapter.decision_evaluations(path, 'fixture-1', self.now, market_verified=True)
+            self.assertTrue(views[0].can_collect)
+            self.assertIsNone(views[0].result)
+            item = adapter.enroll_decision(path, 'fixture-1', ACTIVE_HORIZONS[1], self.now)
+            self.assertEqual(adapter.enroll_decision(path, 'fixture-1', ACTIVE_HORIZONS[1], self.now), item)
+            self.assertEqual(item.time_provenance, 'legacy_time_unverified')
+            self.assertIsNone(item.decision_available_at)
+            with self.assertRaises(ValueError):
+                adapter.enroll_decision(path, 'fixture-1', EvaluationHorizon(5), self.now)
             provider.assert_not_called()
-        self.assertEqual(len(self.store.get_observations_for_enrollment('enroll')), 1)
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=self.payload) as provider:
+            adapter.collect(path, 'enroll', self.now, market_verified=True)
+            adapter.collect(path, 'enroll', self.now, market_verified=True)
+            self.assertEqual(provider.call_count, 2)
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            views, cohorts = adapter.performance_evaluations(path, 'TEST', self.now, market_verified=True)
+            provider.assert_not_called()
+        result = next(v.result for v in views if v.result)
+        self.assertAlmostEqual(result.stock_return, .1)
+        self.assertEqual(cohorts[0][1]['benchmark_count'], 1)
+        self.assertFalse(next(v for v in views if v.result).can_collect)
+        self.assertEqual(self.store.get_decision('fixture-1'), record())
+
+    def test_workflow_partial_benchmark_denominator(self):
+        from src.dashboard import evaluation_adapter as adapter
+        path = str(Path(self.temp.name) / 'evaluation.db')
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=lambda s: self.payload(s) if s == 'TEST' else {}):
+            self.collect()
+        views, cohorts = adapter.performance_evaluations(path, 'TEST', self.now, market_verified=True)
+        self.assertEqual(views[0].result.completeness, 'stock_only')
+        self.assertEqual(cohorts[0][1]['evaluated_count'], 1)
+        self.assertEqual(cohorts[0][1]['benchmark_count'], 0)
+        self.assertIsNone(cohorts[0][1]['benchmark_outperformance_rate'])
+
+    def test_dashboard_read_render_and_explicit_enroll(self):
+        from streamlit.testing.v1 import AppTest
+        path = str(Path(self.temp.name) / 'evaluation.db')
+        script = "from src.dashboard.evaluation import history_controls\nfrom src.decision_store import DecisionStore\npath=" + repr(path) + "\nhistory_controls(path, DecisionStore(path,read_only=True).get_decision('fixture-1'))"
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            app = AppTest.from_string(script).run()
+            self.assertFalse(app.exception)
+            self.assertFalse(any(b.label == 'Collect Observation' for b in app.button))
+            app.run()
+            provider.assert_not_called()
+        script = "from src.dashboard.evaluation import performance_section\nperformance_section(" + repr(path) + ", 'TEST')"
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            app = AppTest.from_string(script).run()
+            self.assertFalse(app.exception)
+            app.run()
+            provider.assert_not_called()

@@ -19,6 +19,9 @@ def render():
     if submitted:
         query = (path, ticker)
         st.session_state['performance_query'] = query
+    from src.dashboard.evaluation import performance_section
+    performance_section(*query)
+    st.subheader('Legacy outcomes · V0.3 / V0.5')
     try:
         data = load_performance(*query)
     except HistoryReadError as error:
