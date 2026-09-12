@@ -323,3 +323,108 @@ class TechnicalFeatureTests(unittest.TestCase):
         data['Time Series (Daily)']['2025-03-10']['4. close'] = '999999'
         after = build_technical_feature_snapshot(build_historical_ohlcv('TEST',data,**args))
         self.assertEqual(before,after)
+
+
+class TechnicalEvidenceTests(unittest.TestCase):
+    def inputs(self):
+        from src.technical_features import build_technical_feature_snapshot
+        data = TechnicalFeatureTests().fixture(list(range(100, 150)))
+        return data, build_technical_feature_snapshot(data)
+
+    def catalog(self):
+        from src.technical_evidence import build_technical_research_snapshot, build_technical_evidence_catalog
+        return build_technical_evidence_catalog(build_technical_research_snapshot(*self.inputs()))
+
+    def test_source_matching_and_stale_protection(self):
+        from datetime import timedelta
+        from src.technical_evidence import build_technical_research_snapshot
+        data, features = self.inputs()
+        self.assertIs(build_technical_research_snapshot(data, features).historical_ohlcv, data)
+        for other in (replace(data, symbol='OTHER', bars=tuple(replace(b,symbol='OTHER') for b in data.bars)),
+                      replace(data, requested_as_of=data.requested_as_of-timedelta(hours=1)),
+                      replace(data, bars=data.bars[:-1]),
+                      replace(data, retrieved_at=data.retrieved_at+timedelta(hours=1))):
+            with self.assertRaises(ValueError): build_technical_research_snapshot(other, features)
+        with self.assertRaises(ValueError):
+            build_technical_research_snapshot(data, replace(features, methodology_version='future'))
+        with self.assertRaises(ValueError):
+            build_technical_research_snapshot(data, replace(features, features=features.features[:-1]))
+
+    def test_fixed_ids_categories_and_order_independent(self):
+        from src.technical_evidence import build_technical_research_snapshot, build_technical_evidence_catalog
+        data, features = self.inputs()
+        first = self.catalog()
+        reversed_features = replace(features, features=tuple(reversed(features.features)))
+        second = build_technical_evidence_catalog(build_technical_research_snapshot(data,reversed_features))
+        self.assertEqual(first, second)
+        self.assertEqual(first, self.catalog())
+        self.assertEqual([i.evidence_id for i in first.items], [f'T{i:03d}' for i in range(1,len(first.items)+1)])
+        categories = list(dict.fromkeys(i.category for i in first.items))
+        self.assertEqual(categories, ['PRICE','TREND','MOMENTUM','VOLATILITY','VOLUME','DATA_QUALITY'])
+        self.assertEqual(first.resolve('T001').label,'latest_close')
+        with self.assertRaises(ValueError): first.resolve('E001')
+        with self.assertRaises(ValueError): first.resolve('T999')
+
+    def test_classification_units_and_missing(self):
+        data, features = self.inputs()
+        catalog = self.catalog()
+        by_name = {i.label:i for i in catalog.items}
+        for name in ('latest_close','latest_high','latest_low','latest_volume'):
+            self.assertEqual(by_name[name].classification,'RETRIEVED_FACT')
+        for feature in features.features:
+            item = by_name[feature.name]
+            self.assertEqual(item.classification,'CALCULATED_METRIC')
+            self.assertEqual(item.value,feature.value)
+            self.assertEqual(item.unit,feature.unit)
+            self.assertEqual(item.unavailable_reason,feature.unavailable_reason)
+        self.assertIsNone(by_name['sma_200'].value)
+        self.assertEqual(by_name['sma_200'].unavailable_reason,'UNAVAILABLE_DUE_TO_HISTORY')
+        self.assertIsNotNone(by_name['sma_50'].value)
+        self.assertEqual(by_name['momentum_5'].unit,'decimal_return')
+        self.assertEqual(by_name['close_vs_sma_20_pct'].unit,'percent')
+        self.assertIsInstance(by_name['latest_close'].value,(int,float))
+
+    def test_bounded_packet_provenance_no_signal_and_pure(self):
+        from src.technical_evidence import build_technical_research_snapshot, build_technical_evidence_catalog
+        from dataclasses import fields
+        data, features = self.inputs()
+        before = repr((data,features))
+        with patch('socket.socket.connect',side_effect=AssertionError('No network')), \
+             patch('src.alpha_vantage_client._request',side_effect=AssertionError('No provider')), \
+             patch('src.technical_features.build_technical_feature_snapshot',side_effect=AssertionError('No recalculation')):
+            snapshot = build_technical_research_snapshot(data,features)
+            catalog = build_technical_evidence_catalog(snapshot)
+            packet = catalog.to_packet()
+            json.dumps(packet,allow_nan=False)
+        self.assertEqual(before,repr((data,features)))
+        self.assertEqual(catalog.provenance.requested_as_of,data.requested_as_of)
+        self.assertEqual(catalog.provenance.latest_completed_session,data.effective_last_session)
+        self.assertEqual(catalog.provenance.adjustment_mode,'RAW')
+        self.assertEqual(catalog.provenance.market_data_methodology,data.methodology_version)
+        self.assertEqual(catalog.provenance.feature_methodology,features.methodology_version)
+        self.assertEqual(catalog.methodology_version,'technical-evidence-v1')
+        self.assertNotIn('bars', packet)
+        self.assertNotIn('source_dataset',json.dumps(packet))
+        forbidden = {'recommendation','signal','technical_rating','confidence','price_target','expected_return'}
+        self.assertFalse(forbidden & {f.name for f in fields(snapshot)})
+        self.assertFalse(forbidden & {i.label for i in catalog.items})
+        self.assertEqual({i.classification for i in catalog.items},{'RETRIEVED_FACT','CALCULATED_METRIC'})
+        with self.assertRaises(FrozenInstanceError): catalog.items[0].value = 0
+        packet['items'][0]['value'] = 0
+        self.assertNotEqual(catalog.items[0].value,0)
+
+    def test_invalid_features_and_empty_snapshot(self):
+        from src.technical_evidence import build_technical_research_snapshot, build_technical_evidence_catalog, TechnicalEvidenceItem
+        from src.technical_features import build_technical_feature_snapshot
+        data, features = self.inputs()
+        for changed in (replace(features.features[0],unit='incorrect'),
+                        replace(features.features[0],value='fabricated prose')):
+            with self.assertRaises(ValueError):
+                build_technical_research_snapshot(data,replace(features,features=(changed,)+features.features[1:]))
+        for bad in (float('nan'),float('inf')):
+            with self.assertRaises(ValueError):
+                TechnicalEvidenceItem('T001','PRICE','close',bad,'price','RETRIEVED_FACT','source')
+        empty = TechnicalFeatureTests().fixture([])
+        catalog = build_technical_evidence_catalog(build_technical_research_snapshot(empty,build_technical_feature_snapshot(empty)))
+        self.assertIsNone(catalog.items[0].value)
+        self.assertEqual(catalog.items[0].unavailable_reason,'NO_COMPLETED_BARS')

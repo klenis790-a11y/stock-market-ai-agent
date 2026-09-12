@@ -261,7 +261,8 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7 Technical & Short-Term Research — IN PROGRESS
 - V0.7A Market Data Foundation — COMPLETE
 - V0.7B Deterministic Technical Features — COMPLETE
-- V0.7C Technical Snapshot & Evidence Catalog — next
+- V0.7C Technical Snapshot & Evidence Catalog — COMPLETE
+- V0.7D Technical Analyst & Short-Term Signal Contract — next
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
 performance is claimed.
@@ -275,3 +276,7 @@ See the [market-data foundation](docs/V0_7_MARKET_DATA_FOUNDATION.md).
 V0.7B adds versioned deterministic SMA, RSI, MACD, ATR, momentum and volume features
 with per-feature availability and source provenance. No technical signals or LLM
 interpretation are added. See [technical features](docs/V0_7_TECHNICAL_FEATURES.md).
+
+V0.7C packages matching raw market data and features into a bounded, versioned technical
+evidence catalog with stable local IDs and explicit missing values. No Technical Analyst
+or signals are implemented. See [technical evidence](docs/V0_7_TECHNICAL_EVIDENCE.md).
