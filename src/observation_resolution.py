@@ -3,7 +3,7 @@
 A future reference close is an evaluation anchor, never decision-time evidence.
 Existing v1 enrollments are not reinterpreted under the v2 close policy.
 """
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, date, timedelta
 from src.evaluation_models import EvaluationEnrollment, EvaluationMethodology, ACTIVE_HORIZONS
 from src.market_calendar import USMarketCalendar, MarketSession, aware_utc
@@ -18,6 +18,18 @@ def close_methodology() -> EvaluationMethodology:
         price_policy_version=PRICE_POLICY_VERSION,
         calendar_id=USMarketCalendar.calendar_id, calendar_version=USMarketCalendar.version,
         baseline_rule='first regular session close strictly after captured analysis completion')
+
+
+ADJUSTED_PRICE_POLICY = 'alpha-vantage-adjusted-close-v1'
+ADJUSTMENT_BASIS = 'alpha-vantage-provider-split-dividend-adjusted'
+
+
+def adjusted_close_methodology() -> EvaluationMethodology:
+    """Explicit opt-in; legacy defaults and reference-close selection are unchanged."""
+    return replace(close_methodology(), version='fundamental-provider-adjusted-v1',
+                   price_policy_version=ADJUSTED_PRICE_POLICY,
+                   adjustment_policy=ADJUSTMENT_BASIS,
+                   benchmark_policy_version='voo-aligned-provider-adjusted-v1')
 
 
 @dataclass(frozen=True)
@@ -49,7 +61,7 @@ def resolve_observation_target(enrollment: EvaluationEnrollment, as_of: datetime
         return ObservationTarget(enrollment, None, None, None, None, status, reason)
     if market != SUPPORTED_MARKET:
         return unavailable('UNSUPPORTED', 'Only verified US equities/ETFs under XNYS are supported.')
-    if enrollment.methodology != close_methodology() or enrollment.horizon not in ACTIVE_HORIZONS:
+    if enrollment.methodology not in (close_methodology(), adjusted_close_methodology()) or enrollment.horizon not in ACTIVE_HORIZONS:
         return unavailable('UNSUPPORTED', 'Unsupported methodology, calendar version or active horizon.')
     if enrollment.time_provenance != 'captured_analysis_completion' or not enrollment.decision_available_at:
         return unavailable('UNRESOLVABLE', 'Verified analysis completion time was not preserved.')
@@ -75,4 +87,6 @@ def resolve_observation_target(enrollment: EvaluationEnrollment, as_of: datetime
         status = 'ELIGIBLE' if as_of >= target.closes_at else 'NOT_YET_ELIGIBLE'
         reason = None
     return ObservationTarget(enrollment, decision_at, reference, nominal, target, status, reason,
-                             as_of >= reference.closes_at)
+                             as_of >= reference.closes_at, price_type=(
+                                 'Alpha Vantage adjusted close' if enrollment.methodology == adjusted_close_methodology()
+                                 else 'regular-session split-consistent close excluding cash dividends'))

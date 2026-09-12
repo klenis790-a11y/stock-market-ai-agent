@@ -343,3 +343,130 @@ class ObservationResolutionTests(unittest.TestCase):
             self.assertFalse(hasattr(result, 'benchmark_target'))
             self.assertFalse(hasattr(result, 'prices'))
             self.assertEqual(result, self.resolve('2025-03-10T10:00:00-04:00'))
+
+
+class AdjustedCollectionTests(unittest.TestCase):
+    def setUp(self):
+        from datetime import datetime, timezone
+        from src.observation_resolution import adjusted_close_methodology
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.store = EvaluationStore(str(Path(self.temp.name) / 'evaluation.db'))
+        self.store.initialize()
+        self.store.save_decision(record())
+        self.store.save_outcome(outcome())
+        self.item = enrollment(methodology=adjusted_close_methodology(),
+            decision_available_at='2026-01-02T12:00:00Z', time_provenance='captured_analysis_completion')
+        self.store.save_enrollment(self.item)
+        self.now = datetime(2026, 9, 1, tzinfo=timezone.utc)
+
+    def payload(self, symbol):
+        return {'Meta Data': {'2. Symbol': symbol}, 'Time Series (Daily)': {
+            '2026-01-02': {'4. close': '999', '5. adjusted close': '100'},
+            '2026-04-02': {'4. close': '888', '5. adjusted close': '110'}}}
+
+    def collect(self):
+        from src.evaluation_collection import collect_evaluation_observations
+        from src.observation_resolution import SUPPORTED_MARKET
+        return collect_evaluation_observations(self.store, self.item, self.now,
+                                               market=SUPPORTED_MARKET, clock=lambda: self.now)
+
+    def test_success_exact_fields_provenance_idempotency_and_legacy_integrity(self):
+        from src.evaluation_collection import ADJUSTED_PRICE_POLICY
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=self.payload) as provider:
+            first = self.collect()
+            self.assertEqual(provider.call_count, 2)
+            self.assertEqual([c.args[0] for c in provider.call_args_list], ['TEST', 'VOO'])
+            self.assertEqual(self.collect(), first)
+            self.assertEqual(provider.call_count, 2)
+        for item, value, day in zip(first, (100, 110), ('2026-01-02', '2026-04-02')):
+            self.assertEqual(item.stock.price, value)
+            self.assertEqual(item.benchmark.price, value)
+            self.assertTrue(item.effective_at.startswith(day))
+            self.assertEqual(item.stock.observed_at, item.benchmark.observed_at)
+            self.assertIn(ADJUSTED_PRICE_POLICY, item.stock.price_type)
+            self.assertTrue(item.stock.retrieved_at.endswith('Z'))
+        self.assertEqual(self.store.get_decision('fixture-1'), record())
+        self.assertEqual(self.store.get_outcomes_for_decision('fixture-1'), [outcome()])
+        self.assertEqual(len(self.store.get_observations_for_enrollment('enroll')), 2)
+        with sqlite3.connect(str(Path(self.temp.name) / 'evaluation.db')) as db:
+            self.assertFalse(db.execute("SELECT name FROM sqlite_master WHERE name='evaluation_results'").fetchall())
+
+    def test_gates_make_zero_calls(self):
+        from datetime import datetime, timezone
+        from src.evaluation_collection import collect_evaluation_observations
+        from src.observation_resolution import SUPPORTED_MARKET, close_methodology
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            for item, at, market in (
+                (replace(self.item, methodology=close_methodology()), self.now, SUPPORTED_MARKET),
+                (self.item, datetime(2026, 1, 3, tzinfo=timezone.utc), SUPPORTED_MARKET),
+                (replace(self.item, time_provenance='legacy_time_unverified'), self.now, SUPPORTED_MARKET),
+                (self.item, self.now, 'CRYPTO')):
+                with self.assertRaises(ValueError):
+                    collect_evaluation_observations(self.store, item, at, market=market)
+            provider.assert_not_called()
+
+    def test_missing_benchmark_and_network_failure_preserve_stock(self):
+        def provider(symbol):
+            if symbol == 'VOO':
+                raise RuntimeError('provider failure')
+            return self.payload(symbol)
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=provider):
+            result = self.collect()
+        for item in result:
+            self.assertIsNotNone(item.stock)
+            self.assertIsNone(item.benchmark)
+            self.assertIn('benchmark', item.missing_reason)
+
+    def test_missing_exact_dates_remain_missing(self):
+        def provider(symbol):
+            data = self.payload(symbol)
+            del data['Time Series (Daily)']['2026-04-02' if symbol == 'TEST' else '2026-01-02']
+            data['Time Series (Daily)']['2026-04-01'] = {'5. adjusted close': '123'}
+            return data
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=provider):
+            reference, endpoint = self.collect()
+        self.assertIsNone(reference.benchmark)
+        self.assertIsNone(endpoint.stock)
+        self.assertTrue(endpoint.effective_at.startswith('2026-04-02'))
+
+    def test_normalization_rejects_bad_prices_and_payloads(self):
+        from datetime import date
+        from src.evaluation_collection import normalize_adjusted
+        for value in (None, True, {}, 'bad', '0', '-1', 'NaN', 'Infinity'):
+            data = self.payload('TEST')
+            data['Time Series (Daily)']['2026-01-02']['5. adjusted close'] = value
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                normalize_adjusted(data, 'TEST', date(2026, 1, 2), self.now.isoformat())
+        for data in ({'Information': 'rate limit'}, {'Note': 'limit'}, {'Error Message': 'error'}, [], {}, self.payload('WRONG')):
+            with self.assertRaises(ValueError):
+                normalize_adjusted(data, 'TEST', date(2026, 1, 2), self.now.isoformat())
+        data = self.payload('TEST')
+        del data['Time Series (Daily)']['2026-01-02']['5. adjusted close']
+        with self.assertRaises(ValueError):
+            normalize_adjusted(data, 'TEST', date(2026, 1, 2), self.now.isoformat())
+
+    def test_endpoint_full_request_reuses_client(self):
+        from src.alpha_vantage_client import get_daily_adjusted
+        with patch('src.alpha_vantage_client._request', return_value={}) as request:
+            get_daily_adjusted('TEST')
+            request.assert_called_once_with('TIME_SERIES_DAILY_ADJUSTED', 'TEST', outputsize='full')
+
+    def test_partial_persistence_is_not_silently_retried(self):
+        original = self.store.save_observation
+        count = 0
+        def fail_second(item):
+            nonlocal count
+            count += 1
+            if count == 2:
+                raise sqlite3.OperationalError('fixture write failure')
+            original(item)
+        with patch('src.alpha_vantage_client.get_daily_adjusted', side_effect=self.payload), \
+             patch.object(self.store, 'save_observation', side_effect=fail_second):
+            with self.assertRaises(sqlite3.OperationalError):
+                self.collect()
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            with self.assertRaises(ValueError):
+                self.collect()
+            provider.assert_not_called()
+        self.assertEqual(len(self.store.get_observations_for_enrollment('enroll')), 1)

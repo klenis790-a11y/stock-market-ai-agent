@@ -322,3 +322,48 @@ Splits must be consistently reflected, while mergers/symbol history and total-re
 reinvestment remain unsupported. Step 5 must validate provider capabilities before
 retrieval is integrated. The calendar infrastructure can later support trading-session
 horizons/completed intraday bars; no V0.7 horizons, indicators or signals are activated.
+
+### Step 5 approved provider-adjusted observation policy
+
+The explicitly approved replacement for new enrollments uses Alpha Vantage
+`TIME_SERIES_DAILY_ADJUSTED`, field `5. adjusted close`, identically for stock and
+benchmark. The prior split-only expectation is not available directly from this
+provider. Its adjusted series incorporates provider-defined split and cash-dividend
+adjustments. Ratios of these retrieved facts are **provider-adjusted returns**, not
+raw price returns, independently verified total shareholder returns, realized returns,
+or execution returns. No project corporate-action engine is introduced.
+
+New methodology `fundamental-provider-adjusted-v1` uses price policy
+`alpha-vantage-adjusted-close-v1` and benchmark policy `voo-aligned-provider-adjusted-v1`.
+The reference-close rule remains `next-completed-regular-close-v1`; calendar selection
+is unchanged. Earlier methodology snapshots/defaults/rows are retained. Collection
+rejects them rather than interpreting their prices under this new convention.
+
+Collection is explicit via `collect_evaluation_observations`; it requires a preserved,
+matching enrollment and an eligible target before provider access. One `outputsize=full`
+request per distinct symbol supplies both dates, avoiding the latest-100-row limit.
+Only exact date keys and `5. adjusted close` are accepted, with symbol/shape and finite
+positive numeric validation. Raw closes and adjacent dates are never substitutes.
+The endpoint requires suitable Alpha Vantage entitlement; credentials alone do not
+establish access. Existing client pacing/error handling is reused without retries.
+
+Two existing observation rows represent reference and endpoint. Missing/invalid provider
+inputs become None with safe missing-data reasons, independently for each symbol/date.
+Observed timestamps are the selected calendar close (daily-session interpretation),
+not a provider-supplied intraday quote time; actual retrieval and recording times are
+separate UTC values. Endpoint/field provenance lives in existing source/price-type
+strings, with methodology retained on enrollment. No schema changes are needed.
+
+An existing complete pair is returned without retrieval. Partial prior persistence or
+revisions require explicit review and are never silently repaired. Each insertion uses
+the existing store transaction; a second-insert storage failure can leave the first row
+persisted, raises to the caller, and blocks automatic recollection. Missing observations
+are also immutable in this workflow. Provider revision vintages can differ across the
+two symbol requests; there is no atomic provider-wide snapshot guarantee. No calculated
+EvaluationResult is created/persisted here. V0.7's OHLCV adjustment, corporate-action,
+and feature-reproducibility decisions remain separate.
+
+Manual validation on 2026-09-12: one sequence, two successful requests (AAPL and VOO),
+verified exact 2026-01-02 and 2026-04-02 adjusted-close fields after calendar eligibility.
+No persistence, retries, or OpenAI calls. This validates field availability/shape under
+the configured entitlement, not independent reconstruction of provider adjustments.

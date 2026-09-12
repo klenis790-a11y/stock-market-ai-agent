@@ -97,3 +97,8 @@ def _request(function: str, ticker: str | None = None, **params: str | int) -> d
     if not data:
         raise RuntimeError(f"Alpha Vantage returned no data for {function}.")
     return data
+
+
+def get_daily_adjusted(ticker: str) -> dict:
+    """One full historical series supplies both exact evaluation sessions; no retries."""
+    return _request('TIME_SERIES_DAILY_ADJUSTED', ticker, outputsize='full')
