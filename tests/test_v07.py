@@ -202,3 +202,124 @@ class DailyMarketDataTests(unittest.TestCase):
              patch.dict('os.environ', {'ALPHA_VANTAGE_API_KEY': 'offline-fixture'}), \
              patch('src.alpha_vantage_client._pace_request'):
             with self.assertRaises(RuntimeError): get_daily_raw('TEST')
+
+
+class TechnicalFeatureTests(unittest.TestCase):
+    def fixture(self, closes, volumes=None, ranges=None):
+        from datetime import timedelta
+        from src.market_data_models import HistoricalOHLCV
+        # Synthetic ordered observations; calendar normalization is tested separately above.
+        dates = USMarketCalendar().completed_sessions(date(2024, 1, 1), instant('2025-03-10T21:00:00+00:00'))[-len(closes):] if closes else ()
+        bars = tuple(MarketBar('TEST', day, close, close if ranges is None else ranges[i][0],
+                              close if ranges is None else ranges[i][1], close,
+                              100 if volumes is None else volumes[i]) for i, (day, close) in enumerate(zip(dates, closes)))
+        return HistoricalOHLCV('TEST', bars, instant('2025-03-10T21:00:00+00:00'),
+            instant('2025-03-10T21:00:00+00:00'), USMarketCalendar.version, dates[-1] if dates else None, ())
+
+    def build(self, closes, **kwargs):
+        from src.technical_features import build_technical_feature_snapshot
+        return build_technical_feature_snapshot(self.fixture(closes, **kwargs))
+
+    def test_smas_percent_and_stacks(self):
+        up = self.build(list(range(1, 201)))
+        for name, value in (('sma_20', 190.5), ('sma_50', 175.5), ('sma_200', 100.5)):
+            self.assertEqual(up.feature(name).value, value)
+        self.assertAlmostEqual(up.feature('close_vs_sma_20_pct').value, (200/190.5-1)*100)
+        self.assertEqual(up.feature('trend_structure').value, 'BULLISH_STACK')
+        self.assertEqual(self.build(list(range(200, 0, -1))).feature('trend_structure').value, 'BEARISH_STACK')
+        self.assertEqual(self.build([100]*200).feature('trend_structure').value, 'MIXED')
+        self.assertIsNone(self.build([100]*199).feature('sma_200').value)
+        self.assertIsNone(self.build([100]*199).feature('trend_structure').value)
+
+    def test_rsi_wilder_known_and_edges(self):
+        # Standard hand-worked Wilder initialization: gains .238571..., losses .10.
+        prices = [44.34,44.09,44.15,43.61,44.33,44.83,45.10,45.42,45.84,46.08,45.89,46.03,45.61,46.28,46.28]
+        self.assertAlmostEqual(self.build(prices).feature('rsi_14').value, 70.4641350211, places=8)
+        self.assertAlmostEqual(self.build(prices+[46.0]).feature('rsi_14').value, 66.2496185536, places=8)
+        for closes, expected in ((list(range(1, 31)),100), (list(range(30, 0, -1)),0), ([100]*30,50)):
+            self.assertAlmostEqual(self.build(closes).feature('rsi_14').value, expected)
+        self.assertIsNone(self.build([100]*14).feature('rsi_14').value)
+
+    def test_macd_seeding_and_impulse(self):
+        ramp = self.build(list(range(1, 35)))
+        self.assertAlmostEqual(ramp.feature('macd_line').value, 7)
+        self.assertAlmostEqual(ramp.feature('macd_signal').value, 7)
+        self.assertAlmostEqual(ramp.feature('macd_histogram').value, 0)
+        flat = self.build([100]*34)
+        for name in ('macd_line','macd_signal','macd_histogram'):
+            self.assertAlmostEqual(flat.feature(name).value, 0)
+        impulse = self.build([100]*34+[110])
+        self.assertAlmostEqual(impulse.feature('macd_line').value, 0.7977207977208)
+        self.assertAlmostEqual(impulse.feature('macd_signal').value, 0.1595441595442)
+        self.assertAlmostEqual(impulse.feature('macd_histogram').value, 0.6381766381766)
+        self.assertIsNone(self.build([100]*25).feature('macd_line').value)
+        self.assertIsNotNone(self.build([100]*26).feature('macd_line').value)
+        self.assertIsNone(self.build([100]*33).feature('macd_signal').value)
+
+    def test_atr_normal_gaps_flat_and_smoothing(self):
+        normal = self.build([100]*15, ranges=[(102,98)]*15)
+        self.assertEqual(normal.feature('atr_14').value, 4)
+        self.assertEqual(normal.feature('atr_pct').value, 4)
+        for end, high, low in ((110,112,108),(90,92,88)):
+            gap = self.build([100]*14+[end], ranges=[(102,98)]*14+[(high,low)])
+            self.assertAlmostEqual(gap.feature('atr_14').value, 32/7)
+        smoothed = self.build([100]*16, ranges=[(102,98)]*15+[(107,93)])
+        self.assertAlmostEqual(smoothed.feature('atr_14').value, 66/14)
+        self.assertEqual(self.build([100]*15).feature('atr_14').value, 0)
+        self.assertIsNone(self.build([100]*14).feature('atr_14').value)
+
+    def test_momentum_and_volume(self):
+        for closes, expected in (([100]*5+[110],.1), ([100]*5+[90],-.1), ([100]*6,0)):
+            self.assertAlmostEqual(self.build(closes).feature('momentum_5').value, expected)
+        self.assertAlmostEqual(self.build([100]*20+[120]).feature('momentum_20').value, .2)
+        self.assertIsNone(self.build([100]*5).feature('momentum_5').value)
+        for latest in (200,50,0):
+            result = self.build([100]*20, volumes=[100]*19+[latest])
+            self.assertEqual(result.feature('average_volume_20').value, (1900+latest)/20)
+            self.assertEqual(result.feature('volume_ratio_20').value, latest/((1900+latest)/20))
+        zero = self.build([100]*20, volumes=[0]*20)
+        self.assertEqual(zero.feature('average_volume_20').value, 0)
+        self.assertEqual(zero.feature('volume_ratio_20').unavailable_reason, 'UNAVAILABLE_ZERO_DENOMINATOR')
+        self.assertIsNone(self.build([100]*19).feature('average_volume_20').value)
+
+    def test_partial_snapshot_and_missing_sessions(self):
+        from src.technical_features import build_technical_feature_snapshot
+        result = self.build([100]*50)
+        for name in ('sma_20','sma_50','rsi_14','macd_signal','atr_14','average_volume_20'):
+            self.assertIsNotNone(result.feature(name).value)
+        self.assertEqual(result.feature('sma_200').unavailable_reason, 'UNAVAILABLE_DUE_TO_HISTORY')
+        data = self.fixture([100]*50)
+        gap = replace(data, bars=data.bars[:5]+data.bars[6:], missing_sessions=(data.bars[5].session_date,))
+        result = build_technical_feature_snapshot(gap)
+        self.assertIsNotNone(result.feature('sma_20').value)
+        self.assertEqual(result.feature('rsi_14').unavailable_reason, 'UNAVAILABLE_DUE_TO_MISSING_SESSIONS')
+        self.assertEqual(result.feature('macd_line').unavailable_reason, 'UNAVAILABLE_DUE_TO_MISSING_SESSIONS')
+        self.assertTrue(all(f.value is None for f in self.build([]).features))
+
+    def test_pure_immutable_provenance_and_numeric_safety(self):
+        from src.technical_features import build_technical_feature_snapshot, FeatureValue
+        data = self.fixture(list(range(1, 201)))
+        before = repr(data)
+        with patch('socket.socket.connect', side_effect=AssertionError('No network')), \
+             patch('src.alpha_vantage_client._request', side_effect=AssertionError('No provider')):
+            result = build_technical_feature_snapshot(data)
+            self.assertEqual(result, build_technical_feature_snapshot(data))
+        self.assertEqual(before, repr(data))
+        self.assertIs(result.source_dataset, data)
+        self.assertEqual(result.as_of, data.requested_as_of)
+        self.assertEqual(result.latest_session, data.effective_last_session)
+        self.assertEqual(result.methodology_version, 'technical-features-v1')
+        self.assertIn(('MACD_SMA_SEEDED_EMA',(12,26,9)), result.indicator_parameters)
+        with self.assertRaises(FrozenInstanceError): result.methodology_version = 'x'
+        for value in (float('nan'),float('inf')):
+            with self.assertRaises(ValueError): FeatureValue('bad',value,'price')
+
+    def test_uncompleted_future_bar_cannot_change_features(self):
+        from src.technical_features import build_technical_feature_snapshot
+        data = payload(['2025-03-07','2025-03-10'])
+        args = dict(as_of=instant('2025-03-10T10:17:00-04:00'),
+                    retrieved_at=instant('2025-03-11T00:00:00+00:00'),market=SUPPORTED_MARKET)
+        before = build_technical_feature_snapshot(build_historical_ohlcv('TEST',data,**args))
+        data['Time Series (Daily)']['2025-03-10']['4. close'] = '999999'
+        after = build_technical_feature_snapshot(build_historical_ohlcv('TEST',data,**args))
+        self.assertEqual(before,after)
