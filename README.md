@@ -30,7 +30,7 @@ python3.12 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-Reuse an existing configured environment. Direct third-party runtime dependencies are the official OpenAI SDK and Streamlit, pinned in `requirements.txt`; pip resolves their required dependencies. Financial requests and tests use the standard library.
+Reuse an existing configured environment. Direct third-party runtime dependencies are the official OpenAI SDK, Streamlit and exchange_calendars, pinned in `requirements.txt`; pip resolves their required dependencies. Financial HTTP requests use the standard library; calendar calculations run offline.
 
 Configure these environment variables privately:
 
@@ -236,3 +236,29 @@ no live trading, automatic outcome capture, strategy adaptation or performance g
 UI tests use Streamlit AppTest with mocked providers and temporary databases.
 
 For a detailed architecture and project-status review through V0.5, see the [V0.5 checkpoint](docs/V0_5_CHECKPOINT.md).
+
+
+## V0.6 — Evaluation Infrastructure: COMPLETE
+
+Explicit methodology/horizon enrollment, offline XNYS targets, Alpha Vantage adjusted-close
+observations, atomic persistence and deterministic provider-adjusted returns are implemented.
+Decision History offers explicit enrollment/eligible collection; Performance separates
+V0.6 cohorts from legacy outcomes. No automatic collection or trading is introduced.
+
+Legacy/current dashboard saves lack verified analysis-completion metadata: enrolling
+those records remains unresolved. Collection requires a supported enrollment with
+trustworthy timing provenance; the dashboard does not guess or backfill it.
+See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and limitations.
+
+### Roadmap
+
+- V0.1 Single Stock Research — COMPLETE
+- V0.2 Portfolio Awareness — COMPLETE
+- V0.3 Decision History & Memory — COMPLETE
+- V0.4 Multi-Agent System — COMPLETE
+- V0.5 Interface — COMPLETE
+- V0.6 Evaluation Infrastructure — COMPLETE
+- V0.7 Technical & Short-Term Research — NEXT
+
+Paper trading and execution remain later work. No backtested alpha or market-beating
+performance is claimed.
