@@ -65,7 +65,21 @@ def resolve_observation_target(enrollment: EvaluationEnrollment, as_of: datetime
         return unavailable('UNSUPPORTED', 'Unsupported methodology, calendar version or active horizon.')
     if enrollment.time_provenance != 'captured_analysis_completion' or not enrollment.decision_available_at:
         return unavailable('UNRESOLVABLE', 'Verified analysis completion time was not preserved.')
-    decision_at = datetime.fromisoformat(enrollment.decision_available_at.replace('Z', '+00:00'))
+    return _resolve_close_target(enrollment, as_of, enrollment.decision_available_at,
+                                market=market, calendar=calendar)
+
+
+def _resolve_close_target(enrollment, as_of, available_at, *, market, calendar=None):
+    """Shared calendar kernel. Source-specific entry points validate methodology first.
+
+    Technical enrollment uses recorded existence, not fabricated analysis completion.
+    """
+    as_of = aware_utc(as_of)
+    def unavailable(status, reason):
+        return ObservationTarget(enrollment, None, None, None, None, status, reason)
+    if market != SUPPORTED_MARKET:
+        return unavailable('UNSUPPORTED', 'Only verified US equities/ETFs under XNYS are supported.')
+    decision_at = aware_utc(datetime.fromisoformat(available_at.replace('Z', '+00:00')))
     enrolled_at = datetime.fromisoformat(enrollment.enrolled_at.replace('Z', '+00:00'))
     calendar = calendar or USMarketCalendar()
     if (calendar.calendar_id, calendar.version) != (enrollment.methodology.calendar_id,
@@ -75,8 +89,12 @@ def resolve_observation_target(enrollment: EvaluationEnrollment, as_of: datetime
         reference = calendar.session_on_or_after(decision_at.astimezone(calendar.timezone).date())
         if reference.closes_at <= decision_at:
             reference = calendar.session_on_or_after(reference.date + timedelta(days=1))
-        nominal = reference.date + timedelta(days=enrollment.horizon.length)
-        target = calendar.session_on_or_after(nominal)
+        if enrollment.horizon.unit == 'trading_sessions':
+            target = calendar.advance_sessions(reference.date, enrollment.horizon.length)
+            nominal = target.date
+        else:
+            nominal = reference.date + timedelta(days=enrollment.horizon.length)
+            target = calendar.session_on_or_after(nominal)
     except (ValueError, OverflowError):
         return unavailable('UNRESOLVABLE', 'Timestamp is outside supported calendar coverage.')
     if target.closes_at <= reference.closes_at:
@@ -88,5 +106,5 @@ def resolve_observation_target(enrollment: EvaluationEnrollment, as_of: datetime
         reason = None
     return ObservationTarget(enrollment, decision_at, reference, nominal, target, status, reason,
                              as_of >= reference.closes_at, price_type=(
-                                 'Alpha Vantage adjusted close' if enrollment.methodology == adjusted_close_methodology()
+                                 'Alpha Vantage adjusted close' if enrollment.methodology.price_policy_version == ADJUSTED_PRICE_POLICY
                                  else 'regular-session split-consistent close excluding cash dividends'))

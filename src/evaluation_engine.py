@@ -81,6 +81,17 @@ def evaluate_observations(enrollment, reference, endpoint, decision):
     replace(decision)  # Validate without mutating legacy metadata.
     if (decision.decision_id, decision.ticker) != (enrollment.decision_id, enrollment.ticker):
         raise ValueError('Decision does not match enrollment.')
+    return _evaluate_source_observations(enrollment, reference, endpoint,
+        source_label=decision.recommendation, confidence=decision.confidence_score,
+        source_timestamp=decision.decision_timestamp)
+
+
+def _evaluate_source_observations(enrollment, reference, endpoint, *, source_label, confidence, source_timestamp):
+    """Shared arithmetic kernel; caller validates its preserved source contract.
+
+    EvaluationResult.recommendation is a source label, not a fundamental decision
+    conversion, when this kernel is used by the technical evaluation adapter.
+    """
     reference = _observation(reference, enrollment, 'reference')
     endpoint = _observation(endpoint, enrollment, 'endpoint')
     if reference and endpoint and reference.effective_at >= endpoint.effective_at:
@@ -103,8 +114,8 @@ def evaluate_observations(enrollment, reference, endpoint, decision):
     for item in (reference, endpoint):
         if item and item.missing_reason:
             limitations.append(item.missing_reason)
-    return EvaluationResult(enrollment, decision.recommendation, decision.confidence_score,
-        decision.decision_timestamp, reference.observation_id if reference else None,
+    return EvaluationResult(enrollment, source_label, confidence,
+        source_timestamp, reference.observation_id if reference else None,
         endpoint.observation_id if endpoint else None, reference.effective_at if reference else None,
         endpoint.effective_at if endpoint else None, reference.recorded_at if reference else None,
         endpoint.recorded_at if endpoint else None, stock, benchmark, excess,
@@ -127,6 +138,11 @@ def aggregate_evaluations(results):
     cohorts = {(r.enrollment.horizon, r.enrollment.methodology.digest, r.enrollment.time_provenance) for r in results}
     if len(cohorts) > 1:
         raise ValueError('Aggregate only one horizon/methodology/time-provenance cohort.')
+    return _aggregate_return_metrics(results, len({r.enrollment.decision_id for r in results}))
+
+
+def _aggregate_return_metrics(results, unique_source_count):
+    """Shared denominators/arithmetic; source adapters enforce identities/cohorts."""
     for r in results:
         for value in (r.stock_return, r.benchmark_return, r.excess_return):
             if value is not None and (type(value) not in (int, float) or not isfinite(value)):
@@ -139,7 +155,7 @@ def aggregate_evaluations(results):
     benchmark = [r.benchmark_return for r in paired]
     excess = [r.excess_return for r in paired]
     return dict(result_count=len(results), evaluated_count=len(stock), unevaluated_count=len(results)-len(stock),
-        benchmark_count=len(paired), unique_decision_count=len({r.enrollment.decision_id for r in results}),
+        benchmark_count=len(paired), unique_decision_count=unique_source_count,
         average_stock_return=mean(stock) if stock else None, median_stock_return=median(stock) if stock else None,
         paired_average_stock_return=mean([r.stock_return for r in paired]) if paired else None,
         average_benchmark_return=mean(benchmark) if benchmark else None,

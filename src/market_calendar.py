@@ -62,3 +62,11 @@ class USMarketCalendar:
         if self._calendar.session_close(label).to_pydatetime() > as_of:
             label = self._calendar.previous_session(label)
         return label.date()
+
+    def advance_sessions(self, session: date, count: int) -> MarketSession:
+        """Count sessions strictly after a validated reference, including early closes."""
+        if type(count) is not int or count < 1:
+            raise ValueError('Positive trading-session count required.')
+        label = self._calendar.date_to_session(session.isoformat(), direction='none')
+        label = self._calendar.session_offset(label, count)
+        return self.session_on_or_after(label.date())

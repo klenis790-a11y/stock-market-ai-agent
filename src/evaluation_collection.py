@@ -57,6 +57,13 @@ def collect_evaluation_observations(store, enrollment, as_of, *, market, clock=n
     if enrollment.methodology != adjusted_close_methodology():
         raise ValueError('Unsupported adjusted-price policy.')
     target = resolve_observation_target(enrollment, as_of, market=market)
+    return _collect_target_observations(store, enrollment, target, clock=clock)
+
+
+def _collect_target_observations(store, enrollment, target, *, clock=now_utc):
+    """Shared exact-window collection after source-specific resolution/policy checks."""
+    if target.enrollment != enrollment:
+        raise ValueError('Target enrollment mismatch.')
     if target.eligibility != 'ELIGIBLE':
         raise ValueError(f'Observation target {target.eligibility}.')
     if store.read_only:

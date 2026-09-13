@@ -648,3 +648,303 @@ class TechnicalSignalPersistenceTests(unittest.TestCase):
             store=TechnicalSignalStore(directory+'/db');store.initialize()
             store.save_technical_signal(record)
             self.assertEqual(store.get_technical_signal(record.record_id),record)
+
+
+def dt(value):
+    return datetime.fromisoformat(value.replace('Z', '+00:00'))
+
+
+class TechnicalEvaluationTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from src.technical_evaluation_store import TechnicalEvaluationStore
+        from src.technical_signal_store import TechnicalSignalStore
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = self.directory.name + '/history.db'
+        self.store = TechnicalEvaluationStore(self.path)
+        self.store.initialize()
+        self.signals = TechnicalSignalStore(self.path)
+        for name in ('socket.socket.connect', 'src.openai_client.request_text',
+                     'src.technical_analyst.analyze_technical_snapshot'):
+            guard = patch(name, side_effect=AssertionError('No network/AI during evaluation'))
+            guard.start(); self.addCleanup(guard.stop)
+
+    def record(self, direction='BULLISH', horizon='SHORT_TERM_1_TO_5_SESSIONS', identity='signal',
+               created='2025-03-11T13:00:00Z'):
+        from src.technical_signal_store import TechnicalSignalRecord
+        # Preserved synthetic source packet, not a new Analyst call.
+        _, catalog = TechnicalAnalystTests().fixture()
+        from dataclasses import asdict
+        from src.technical_analyst import ANALYST_VERSION
+        signal = dict(provenance=catalog.to_packet()['provenance'], horizon=horizon,
+            analysis=TechnicalAnalystTests().output(catalog, direction),
+            evidence_catalog_version=catalog.methodology_version,
+            model='fixture-model', analyst_methodology_version=ANALYST_VERSION)
+        return TechnicalSignalRecord(identity,created,json.dumps(signal),json.dumps(catalog.to_packet()))
+
+    def enrolled(self, direction='BULLISH', horizon='SHORT_TERM_1_TO_5_SESSIONS', identity='signal'):
+        from src.technical_evaluation import enroll_technical_signal
+        from src.observation_resolution import SUPPORTED_MARKET
+        record=self.record(direction,horizon,identity)
+        self.signals.save_technical_signal(record)
+        enrollment=enroll_technical_signal(self.store,record.record_id,dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+        return record,enrollment
+
+    def observations(self, enrollment, stock_end=105, benchmark_end=104):
+        from src.technical_evaluation import resolve_technical_target
+        from src.evaluation_models import EvaluationPrice, EvaluationObservation
+        target=resolve_technical_target(enrollment,dt('2025-06-01T00:00:00Z'))
+        observations=[]
+        for index,(point,session) in enumerate((('reference',target.reference),('endpoint',target.target))):
+            def price(symbol,end):
+                return None if end is None else EvaluationPrice(symbol,100 if index==0 else end,
+                    session.closes_at.isoformat(),'2025-06-01T00:00:00Z',
+                    'Alpha Vantage / TIME_SERIES_DAILY_ADJUSTED',
+                    '5. adjusted close / alpha-vantage-adjusted-close-v1',
+                    enrollment.methodology.adjustment_policy,'USD')
+            observations.append(EvaluationObservation(enrollment.enrollment_id+'-'+point,enrollment.enrollment_id,
+                point,session.closes_at.isoformat(),'2025-06-01T00:00:00Z',
+                price(enrollment.ticker,stock_end),price('VOO',benchmark_end),
+                'Fixture unavailable' if stock_end is None or benchmark_end is None else None))
+        return tuple(observations)
+
+    def test_fixed_horizons_and_policy_versions(self):
+        from src.technical_evaluation import mapped_horizon, EVALUATION_VERSION, HORIZON_MAP_VERSION
+        for horizon,count in (('SHORT_TERM_1_TO_5_SESSIONS',5),('SWING_1_TO_4_WEEKS',20)):
+            _,enrollment=self.enrolled(horizon=horizon,identity=horizon)
+            self.assertEqual(enrollment.horizon.length,count)
+            self.assertEqual(enrollment.horizon.unit,'trading_sessions')
+            self.assertEqual(enrollment.horizon,mapped_horizon(horizon))
+            self.assertEqual(enrollment.methodology.version,EVALUATION_VERSION)
+            self.assertEqual(enrollment.horizon_mapping_version,HORIZON_MAP_VERSION)
+            self.assertEqual(enrollment.methodology.benchmark_symbol,'VOO')
+            self.assertEqual(self.store.get_enrollment(enrollment.enrollment_id),enrollment)
+        with self.assertRaises(ValueError):mapped_horizon('choose-best-day')
+
+    def test_explicit_duplicate_unknown_and_late_enrollment(self):
+        import sqlite3
+        from src.technical_evaluation import enroll_technical_signal, resolve_technical_target
+        from src.observation_resolution import SUPPORTED_MARKET
+        record=self.record();self.signals.save_technical_signal(record)
+        self.assertEqual(self.store.list_enrollments(),[])
+        with self.assertRaises(ValueError):enroll_technical_signal(self.store,'unknown',dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+        e=enroll_technical_signal(self.store,record.record_id,dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+        with self.assertRaises(sqlite3.IntegrityError):self.store.save_enrollment(e)
+        from src.technical_evaluation import prepare_technical_enrollment
+        target=resolve_technical_target(e,dt('2025-04-01T00:00:00Z'))
+        for when in (target.reference.closes_at,target.target.closes_at,dt('2025-04-01T00:00:00Z')):
+            with self.assertRaises(ValueError):prepare_technical_enrollment(record,when,market=SUPPORTED_MARKET)
+
+    def test_missing_legacy_future_metadata_and_market_rejected(self):
+        from src.technical_evaluation import prepare_technical_enrollment
+        from src.observation_resolution import SUPPORTED_MARKET
+        base=self.record()
+        for key,value in (('latest_completed_session',None),('requested_as_of','2025-03-12T21:00:00Z'),
+                          ('market_data_methodology','unknown-v0'),('latest_completed_session','2025-03-07')):
+            signal=base.signal;packet=base.evidence_packet
+            signal['provenance'][key]=value;packet['provenance'][key]=value
+            record=replace(base,signal_json=json.dumps(signal),evidence_json=json.dumps(packet))
+            with self.assertRaises(ValueError):prepare_technical_enrollment(record,dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+        for when in (datetime(2025,3,11),dt('2025-03-10T13:00:00Z')):
+            with self.assertRaises(ValueError):prepare_technical_enrollment(base,when,market=SUPPORTED_MARKET)
+        with self.assertRaises(ValueError):prepare_technical_enrollment(base,dt('2025-03-11T13:01:00Z'),market='CRYPTO')
+
+    def test_calendar_weekends_holiday_half_day_dst_exact_count(self):
+        from src.technical_evaluation import prepare_technical_enrollment, resolve_technical_target
+        from src.observation_resolution import SUPPORTED_MARKET
+        from datetime import timedelta
+        # Existing local XNYS calendar supplies actual closes, including observed July 4.
+        cases=(('2025-07-03T16:30:00Z','2025-07-03','2025-07-11','17:00'),
+               ('2025-07-03T17:00:00Z','2025-07-07','2025-07-14','20:00'),
+               ('2025-07-04T12:00:00Z','2025-07-07','2025-07-14','20:00'),
+               ('2025-07-05T12:00:00Z','2025-07-07','2025-07-14','20:00'),
+               ('2025-07-06T12:00:00Z','2025-07-07','2025-07-14','20:00'),
+               ('2025-10-31T12:00:00Z','2025-10-31','2025-11-07','20:00'))
+        for created,reference,endpoint,close in cases:
+            with self.subTest(created=created):
+                e=prepare_technical_enrollment(self.record(created=created),dt(created)+timedelta(seconds=1),market=SUPPORTED_MARKET)
+                target=resolve_technical_target(e,dt(created))
+                self.assertEqual(target.reference.date.isoformat(),reference)
+                self.assertEqual(target.target.date.isoformat(),endpoint)
+                self.assertEqual(target.reference.closes_at.strftime('%H:%M'),close)
+                if endpoint=='2025-11-07':self.assertEqual(target.target.closes_at.hour,21)
+        _,e=self.enrolled(horizon='SWING_1_TO_4_WEEKS')
+        self.assertEqual(resolve_technical_target(e,dt('2025-03-11T14:00:00Z')).target.date,date(2025,4,8))
+
+    def test_eligibility_only_changes_not_window_and_ineligible_no_provider(self):
+        from src.technical_evaluation import resolve_technical_target, collect_technical_observations
+        from datetime import timedelta
+        _,e=self.enrolled();target=resolve_technical_target(e,dt('2025-03-11T13:01:00Z'))
+        before=resolve_technical_target(e,target.target.closes_at-timedelta(seconds=1))
+        after=resolve_technical_target(e,target.target.closes_at)
+        self.assertEqual(before.reference,after.reference);self.assertEqual(before.target,after.target)
+        self.assertEqual(before.eligibility,'NOT_YET_ELIGIBLE');self.assertEqual(after.eligibility,'ELIGIBLE')
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            with self.assertRaises(ValueError):collect_technical_observations(self.store,e.enrollment_id,target.reference.closes_at)
+            provider.assert_not_called()
+
+    def test_direction_and_benchmark_are_independent(self):
+        from src.technical_evaluation import evaluate_technical_signal
+        for direction,end,benchmark,expected,outperform in (
+            ('BULLISH',102,104,True,False),('BULLISH',95,90,False,True),
+            ('BEARISH',99,95,True,True),('BEARISH',105,104,False,True),
+            ('BULLISH',100,100,False,False),('BEARISH',100,100,False,False),
+            ('NEUTRAL',105,104,None,True),('NEUTRAL',95,104,None,False),('NEUTRAL',100,100,None,False)):
+            record=self.record(direction);from src.technical_evaluation import prepare_technical_enrollment
+            from src.observation_resolution import SUPPORTED_MARKET
+            e=prepare_technical_enrollment(record,dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+            result=evaluate_technical_signal(record,e,*self.observations(e,end,benchmark))
+            self.assertEqual(result.directional_success,expected)
+            self.assertEqual(result.benchmark_outperformance,outperform)
+            self.assertEqual(result.evaluation.confidence_score,60)
+            self.assertTrue(result.evaluation.horizon_resolution_verified)
+
+    def test_partial_observations_and_zero_aggregate(self):
+        from src.technical_evaluation import evaluate_technical_signal,aggregate_technical_evaluations,get_technical_result
+        record,e=self.enrolled()
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            pending=get_technical_result(self.store,e.enrollment_id)
+            self.assertEqual(pending.evaluation.completeness,'not_evaluable')
+            self.assertEqual(aggregate_technical_evaluations([pending])['total_enrolled'],1)
+            provider.assert_not_called()
+        for stock,benchmark,state in ((105,104,'full'),(105,None,'stock_only'),(None,104,'not_evaluable'),(None,None,'not_evaluable')):
+            result=evaluate_technical_signal(record,e,*self.observations(e,stock,benchmark))
+            self.assertEqual(result.evaluation.completeness,state)
+            self.assertEqual(result.directional_success,None if stock is None else True)
+            summary=aggregate_technical_evaluations([result])
+            self.assertEqual(summary['evaluated_count'],int(stock is not None))
+            self.assertEqual(summary['benchmark_count'],int(stock is not None and benchmark is not None))
+            if stock is None or benchmark is None:self.assertIsNone(summary['average_excess_return'])
+        empty=aggregate_technical_evaluations([])
+        self.assertEqual(empty['total_enrolled'],0);self.assertIsNone(empty['directional_success_rate'])
+        self.assertIsNone(empty['average_stock_return'])
+
+    def test_mixed_aggregate_denominators_and_breakdowns(self):
+        from src.technical_evaluation import evaluate_technical_signal,aggregate_technical_evaluations
+        results=[]
+        for n,(direction,end,benchmark,horizon) in enumerate((
+            ('BULLISH',105,104,'SHORT_TERM_1_TO_5_SESSIONS'),
+            ('BEARISH',95,None,'SHORT_TERM_1_TO_5_SESSIONS'),
+            ('NEUTRAL',102,104,'SWING_1_TO_4_WEEKS'),
+            ('BULLISH',None,None,'SWING_1_TO_4_WEEKS'))):
+            record,e=self.enrolled(direction,horizon,str(n))
+            results.append(evaluate_technical_signal(record,e,*self.observations(e,end,benchmark)))
+        data=aggregate_technical_evaluations(results)
+        self.assertEqual(data['total_enrolled'],4);self.assertEqual(data['evaluated_count'],3)
+        self.assertEqual(data['directional_count'],2);self.assertEqual(data['directional_success_rate'],1)
+        self.assertEqual(data['benchmark_count'],2);self.assertEqual(data['benchmark_outperformance_rate'],.5)
+        self.assertAlmostEqual(data['average_stock_return'],.02/3)
+        self.assertAlmostEqual(data['median_stock_return'],.02)
+        self.assertAlmostEqual(data['average_excess_return'],-.005)
+        self.assertEqual(data['by_signal']['NEUTRAL']['directional_count'],0)
+        self.assertEqual(data['by_analysis_horizon']['SWING_1_TO_4_WEEKS']['evaluated_count'],1)
+        self.assertTrue(data['pooled_horizons']);self.assertTrue(data['sample_warning'])
+        with self.assertRaises(ValueError):aggregate_technical_evaluations([results[0],results[0]])
+
+    def payload(self,symbol,enrollment,missing=None):
+        from src.technical_evaluation import resolve_technical_target
+        target=resolve_technical_target(enrollment,dt('2025-06-01T00:00:00Z'))
+        series={target.reference.date.isoformat():{'5. adjusted close':'100','4. close':'999'},
+                target.target.date.isoformat():{'5. adjusted close':'105','4. close':'999'}}
+        if missing:series.pop(getattr(target,missing).date.isoformat())
+        return {'Meta Data':{'2. Symbol':symbol},'Time Series (Daily)':series}
+
+    def test_end_to_end_collection_idempotent_and_read_only_result(self):
+        from src.technical_evaluation import collect_technical_observations,get_technical_result
+        from pathlib import Path
+        record,e=self.enrolled()
+        with patch('src.alpha_vantage_client.get_daily_adjusted',side_effect=lambda symbol:self.payload(symbol,e)) as provider:
+            pair=collect_technical_observations(self.store,e.enrollment_id,dt('2025-06-01T00:00:00Z'),clock=lambda:dt('2025-06-01T00:00:00Z'))
+            self.assertEqual(provider.call_count,2)
+            self.assertEqual([c.args[0] for c in provider.call_args_list],['TEST','VOO'])
+            self.assertEqual(collect_technical_observations(self.store,e.enrollment_id,dt('2025-06-02T00:00:00Z')),pair)
+            self.assertEqual(provider.call_count,2)
+        before=Path(self.path).read_bytes()
+        result=get_technical_result(self.store,e.enrollment_id)
+        self.assertAlmostEqual(result.evaluation.stock_return,.05)
+        self.assertTrue(result.directional_success)
+        self.assertEqual(self.signals.get_technical_signal(record.record_id),record)
+        self.assertEqual(Path(self.path).read_bytes(),before)
+
+    def test_stock_failure_no_rows_and_intentional_partial_benchmark(self):
+        from src.technical_evaluation import collect_technical_observations,get_technical_result
+        _,e=self.enrolled()
+        for missing in ('reference','target'):
+            with patch('src.alpha_vantage_client.get_daily_adjusted',side_effect=lambda symbol:self.payload(symbol,e,missing)):
+                with self.assertRaises(ValueError):collect_technical_observations(self.store,e.enrollment_id,dt('2025-06-01T00:00:00Z'))
+            self.assertEqual(self.store.get_observations_for_enrollment(e.enrollment_id),[])
+        with patch('src.alpha_vantage_client.get_daily_adjusted',side_effect=RuntimeError('unavailable')):
+            with self.assertRaises(ValueError):collect_technical_observations(self.store,e.enrollment_id,dt('2025-06-01T00:00:00Z'))
+        with patch('src.alpha_vantage_client.get_daily_adjusted',side_effect=[self.payload('TEST',e),RuntimeError('benchmark unavailable')]):
+            pair=collect_technical_observations(self.store,e.enrollment_id,dt('2025-06-01T00:00:00Z'),clock=lambda:dt('2025-06-01T00:00:00Z'))
+        self.assertEqual(len(pair),2)
+        result=get_technical_result(self.store,e.enrollment_id)
+        self.assertIsNone(result.evaluation.excess_return);self.assertTrue(result.directional_success)
+
+    def test_atomic_failure_no_orphans_duplicates_and_wrong_dates(self):
+        import sqlite3
+        from src.technical_evaluation import enroll_technical_signal
+        from src.observation_resolution import SUPPORTED_MARKET
+        record=self.record();self.signals.save_technical_signal(record)
+        with sqlite3.connect(self.path) as db:
+            db.execute("CREATE TRIGGER fail_enroll BEFORE INSERT ON technical_evaluation_enrollments BEGIN SELECT RAISE(ABORT,'fixture'); END")
+        with self.assertRaises(sqlite3.IntegrityError):enroll_technical_signal(self.store,record.record_id,dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+        self.assertEqual(self.store.list_enrollments(),[])
+        with sqlite3.connect(self.path) as db:db.execute('DROP TRIGGER fail_enroll')
+        e=enroll_technical_signal(self.store,record.record_id,dt('2025-03-11T13:01:00Z'),market=SUPPORTED_MARKET)
+        pair=self.observations(e)
+        with sqlite3.connect(self.path) as db:
+            db.execute("CREATE TRIGGER fail_endpoint BEFORE INSERT ON technical_evaluation_observations WHEN NEW.point='endpoint' BEGIN SELECT RAISE(ABORT,'fixture'); END")
+        with self.assertRaises(sqlite3.IntegrityError):self.store.save_observations(pair)
+        self.assertEqual(self.store.get_observations_for_enrollment(e.enrollment_id),[])
+        with sqlite3.connect(self.path) as db:db.execute('DROP TRIGGER fail_endpoint')
+        self.store.save_observations(pair)
+        with self.assertRaises(sqlite3.IntegrityError):self.store.save_observations(pair)
+        with self.assertRaises(ValueError):self.store.save_observations(pair[:1])
+        self.assertEqual(self.signals.get_technical_signal(record.record_id),record)
+
+    def test_source_tampering_window_mismatch_and_legacy_tables_preserved(self):
+        import sqlite3
+        from src.evaluation_store import EvaluationStore
+        from test_v03 import record as fundamental, outcome
+        from test_v06 import enrollment, observation
+        from src.technical_evaluation import evaluate_technical_signal
+        legacy=EvaluationStore(self.path);legacy.initialize()
+        legacy.save_decision(fundamental());legacy.save_outcome(outcome())
+        legacy.save_enrollment(enrollment());legacy.save_observation(observation())
+        with sqlite3.connect(self.path) as db:
+            before={table:db.execute('SELECT * FROM '+table).fetchall() for table in ('decisions','decision_outcomes','evaluation_enrollments','evaluation_observations')}
+        record,e=self.enrolled();pair=self.observations(e)
+        self.store.save_observations(pair)
+        self.store.initialize()
+        altered=record.signal;altered['analysis']['confidence']=59
+        with self.assertRaises(ValueError):evaluate_technical_signal(replace(record,signal_json=json.dumps(altered)),e,*pair)
+        wrong=replace(pair[1],effective_at='2025-03-19T20:00:00Z',stock=None,benchmark=None,missing_reason='fixture')
+        with self.assertRaises(ValueError):evaluate_technical_signal(record,e,pair[0],wrong)
+        self.assertEqual(legacy.get_enrollment('enroll'),enrollment())
+        self.assertEqual(legacy.get_observations_for_enrollment('enroll'),[observation()])
+        with sqlite3.connect(self.path) as db:
+            for table,rows in before.items():self.assertEqual(db.execute('SELECT * FROM '+table).fetchall(),rows)
+
+    def test_half_day_target_completion_and_unsupported_collection_no_call(self):
+        from src.technical_evaluation import prepare_technical_enrollment, resolve_technical_target,collect_technical_observations
+        from src.observation_resolution import SUPPORTED_MARKET
+        import sqlite3
+        record=self.record(created='2025-06-26T12:00:00Z')
+        self.signals.save_technical_signal(record)
+        e=prepare_technical_enrollment(record,dt('2025-06-26T12:01:00Z'),market=SUPPORTED_MARKET)
+        self.store.save_enrollment(e)
+        before=resolve_technical_target(e,dt('2025-07-03T16:59:59Z'))
+        after=resolve_technical_target(e,dt('2025-07-03T17:00:00Z'))
+        self.assertEqual(before.target.date,date(2025,7,3))
+        self.assertEqual(before.eligibility,'NOT_YET_ELIGIBLE')
+        self.assertEqual(after.eligibility,'ELIGIBLE')
+        with patch('src.alpha_vantage_client.get_daily_adjusted') as provider:
+            with self.assertRaises(ValueError):collect_technical_observations(self.store,e.enrollment_id,dt('2025-07-03T16:59:59Z'))
+            with sqlite3.connect(self.path) as db:
+                raw=json.loads(db.execute('SELECT payload FROM technical_evaluation_enrollments').fetchone()[0])
+                raw['methodology']['version']='unsupported-old-policy'
+                db.execute('UPDATE technical_evaluation_enrollments SET payload=?',(json.dumps(raw),))
+            with self.assertRaises(ValueError):collect_technical_observations(self.store,e.enrollment_id,dt('2025-07-03T17:00:00Z'))
+            provider.assert_not_called()
