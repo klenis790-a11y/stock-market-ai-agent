@@ -33,6 +33,9 @@ _SAFE_MESSAGES = {
     'OpenAI returned invalid synthesis JSON.', 'OpenAI returned invalid analysis JSON.',
     'Specialist response has missing or unexpected fields.',
     'Specialist response identity does not match context.',
+    'Specialist builder returned a mismatched context.',
+    'Specialist returned a mismatched result.',
+    'Specialist confidence_score must be between 0 and 100.',
     'Specialist evidence reference is absent from supplied context.',
     'Analysis has missing or unexpected fields.',
     'Material evidence review keys must exactly match the checklist.',
@@ -48,6 +51,7 @@ def _diagnostic(error):
         'src.normalizers': 'RETRIEVAL', 'src.research_snapshot': 'RETRIEVAL',
         'src.fundamental_analysis': 'FUNDAMENTAL', 'src.risk_analysis': 'RISK',
         'src.synthesis': 'SYNTHESIS', 'src.analysis': 'VALIDATION',
+        'src.multi_agent': 'VALIDATION',
     }
     frame = error.__traceback__
     while frame is not None:
@@ -82,8 +86,11 @@ def run_research(value: str) -> ResearchPageData:
     except (RuntimeError, ValueError) as error:
         stage, message = _diagnostic(error)
         logging.getLogger(__name__).error(
-            "Dashboard research failed stage=%s exception=%s message=%s",
+            "Dashboard research failed stage=%s exception=%s message=%s operation=%s function=%s provider_response_type=%s",
             stage, type(error).__name__, message,
+            getattr(error, "provider_operation", "unknown"),
+            getattr(error, "provider_function", "UNKNOWN"),
+            getattr(error, "provider_response_type", "UNKNOWN"),
         )
         # Never display arbitrary exception text, which might contain credentials.
         raise ResearchRunError('Research failed during retrieval, AI analysis or validation. Check server configuration and try again explicitly.') from None

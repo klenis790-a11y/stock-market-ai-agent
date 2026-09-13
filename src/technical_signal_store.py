@@ -3,6 +3,7 @@ from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 import json
+import sqlite3
 from uuid import uuid4
 
 from src.decision_store import DecisionStore

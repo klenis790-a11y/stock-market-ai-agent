@@ -1079,3 +1079,71 @@ class MultiAgentPipelineTests(unittest.TestCase):
             builder.assert_called_once()
             analyzer.assert_called_once()
         self.synthesis.assert_called_once()
+
+
+class SynthesisDiagnosticTests(unittest.TestCase):
+    def fixture(self):
+        from test_v01 import evidence, payload
+        data = evidence()
+        return MultiAgentSynthesisContext('TEST', [result()]), data, payload(data)
+
+    def test_classified_failures_strict_ui_and_no_rerun(self):
+        import json
+        from unittest.mock import patch
+        from src.synthesis import synthesize_investment_analysis
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        context, evidence, valid = self.fixture()
+        missing=dict(valid);missing.pop('recommendation')
+        badref=json.loads(json.dumps(valid));badref['bull_case'][0]['evidence_refs']=['PRIVATE_NONEXISTENT']
+        cases=[('not JSON','INVALID_JSON'),('```json\n{}\n```','INVALID_JSON'),
+               ('{"broken":','INVALID_JSON'),(json.dumps(missing),'SCHEMA_VALIDATION'),
+               (json.dumps(dict(valid,recommendation='STRONG_BUY')),'INVALID_ENUM'),
+               (json.dumps(badref),'INVALID_EVIDENCE_REFERENCE'),
+               (json.dumps(dict(valid,ticker='OTHER')),'SEMANTIC_VALIDATION')]
+        for confidence in ('60',-1,101):
+            cases.append((json.dumps(dict(valid,confidence_score=confidence)),'SCHEMA_VALIDATION'))
+        for response,kind in cases:
+            with self.subTest(kind=kind), patch('src.synthesis.request_text',return_value=response) as request, patch(
+                'src.multi_agent.run_specialists',side_effect=AssertionError('No rerun')), patch(
+                'src.dashboard.research_adapter.run_stock_research',side_effect=lambda *a,**k:synthesize_investment_analysis(context,evidence)), self.assertLogs(level='ERROR') as logs:
+                with self.assertRaises(ResearchRunError) as caught:run_research('TEST')
+                request.assert_called_once()
+            logged=' '.join(logs.output)
+            self.assertIn('operation=portfolio_manager_synthesis',logged)
+            self.assertIn('failure_type='+kind,logged)
+            self.assertNotIn('PRIVATE_NONEXISTENT',logged)
+            self.assertNotIn('PRIVATE_NONEXISTENT',str(caught.exception))
+
+    def test_sdk_response_extraction_through_valid_synthesis(self):
+        import json
+        from unittest.mock import patch
+        from openai.types.responses import Response, ResponseOutputMessage, ResponseOutputText
+        from src.synthesis import synthesize_investment_analysis
+        context,evidence,data=self.fixture()
+        response=Response.model_construct(status='completed',output=[ResponseOutputMessage(
+            id='fixture',type='message',role='assistant',status='completed',content=[
+                ResponseOutputText(type='output_text',text=json.dumps(data),annotations=[])])])
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'fixture-secret'}), patch('src.openai_client.OpenAI') as sdk, patch(
+            'src.multi_agent.run_specialists',side_effect=AssertionError('No rerun')):
+            create=sdk.return_value.__enter__.return_value.responses.create
+            create.return_value=response
+            analysis=synthesize_investment_analysis(context,evidence)
+            self.assertIsInstance(analysis,InvestmentAnalysis)
+            create.assert_called_once()
+            self.assertTrue(create.call_args.kwargs['text']['format']['strict'])
+            self.assertNotIn('require_completed',create.call_args.kwargs)
+            self.assertEqual(sdk.call_args.kwargs['max_retries'],0)
+
+    def test_incomplete_and_empty_sdk_response_fail_before_json(self):
+        from unittest.mock import patch
+        from openai.types.responses import Response
+        from src.synthesis import synthesize_investment_analysis
+        context,evidence,_=self.fixture()
+        for status in ('incomplete','completed'):
+            response=Response.model_construct(status=status,output=[])
+            with patch.dict('os.environ',{'OPENAI_API_KEY':'fixture-secret'}), patch('src.openai_client.OpenAI') as sdk, self.assertLogs('src.synthesis',level='ERROR') as logs:
+                sdk.return_value.__enter__.return_value.responses.create.return_value=response
+                with self.assertRaises(RuntimeError) as caught:synthesize_investment_analysis(context,evidence)
+            self.assertEqual(caught.exception.synthesis_failure_type,'RESPONSE_EXTRACTION')
+            self.assertIn('failure_type=RESPONSE_EXTRACTION',logs.output[0])
+            self.assertNotIn('fixture-secret',logs.output[0])

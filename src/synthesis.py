@@ -1,6 +1,7 @@
 """Independent final synthesis; no specialist execution, retrieval or persistence."""
 from dataclasses import asdict
 import json
+import logging
 
 from src.analysis import (
     INSTRUCTIONS, PORTFOLIO_INSTRUCTIONS, MEMORY_INSTRUCTIONS,
@@ -60,7 +61,7 @@ temporal and current-evidence citation requirements and qualitative confidence g
 """
 
 
-def synthesize_investment_analysis(
+def _synthesize_investment_analysis(
     synthesis_context: MultiAgentSynthesisContext,
     current_research_evidence: dict,
 ) -> InvestmentAnalysis:
@@ -96,11 +97,42 @@ def synthesize_investment_analysis(
         + (PORTFOLIO_INSTRUCTIONS if portfolio is not None else '')
         + (MEMORY_INSTRUCTIONS if memory is not None else ''),
         max_output_tokens=4000,
+        require_completed=True,
         text={'format': {'type': 'json_schema', 'name': 'investment_analysis',
                          'strict': True, 'schema': build_analysis_schema(evidence, portfolio)}},
     )
     try:
         data = json.loads(response)
     except (ValueError, TypeError):
-        raise ValueError('OpenAI returned invalid synthesis JSON.') from None
+        error = ValueError('OpenAI returned invalid synthesis JSON.')
+        error.synthesis_failure_type = 'INVALID_JSON'
+        error.synthesis_response_detail = ('code_fence' if isinstance(response, str) and response.lstrip().startswith('```')
+                                           else 'json_decode_failed')
+        raise error from None
     return _validate_analysis(data, evidence, portfolio)
+
+
+def synthesize_investment_analysis(synthesis_context, current_research_evidence):
+    """Classify failures without logging model text, citations, context or prompts."""
+    try:
+        return _synthesize_investment_analysis(synthesis_context, current_research_evidence)
+    except (ValueError, RuntimeError, TypeError) as error:
+        kind = getattr(error, 'synthesis_failure_type', None)
+        if kind is None:
+            message = str(error)
+            if message == 'Analysis recommendation is invalid.':
+                kind = 'INVALID_ENUM'
+            elif message.startswith('Analysis contains invalid evidence') or message == 'Analysis statements require evidence references.':
+                kind = 'INVALID_EVIDENCE_REFERENCE'
+            elif (message.startswith('Analysis ') or message.startswith('Material evidence review')) and any(
+                term in message for term in ('fields', 'must be', 'must exactly match')):
+                kind = 'SCHEMA_VALIDATION'
+            elif isinstance(error, RuntimeError):
+                kind = 'API_REQUEST'
+            else:
+                kind = 'SEMANTIC_VALIDATION'
+        error.synthesis_failure_type = kind
+        logging.getLogger(__name__).error(
+            'stage=SYNTHESIS operation=portfolio_manager_synthesis failure_type=%s detail=%s exception=%s',
+            kind, getattr(error, 'synthesis_response_detail', 'withheld'), type(error).__name__)
+        raise

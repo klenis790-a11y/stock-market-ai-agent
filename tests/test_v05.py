@@ -293,6 +293,46 @@ class ResearchDiagnosticTests(unittest.TestCase):
         self.assertEqual(stage, 'SYNTHESIS')
         self.assertEqual(message, 'OpenAI returned invalid synthesis JSON.')
 
+    def test_each_backend_stage_logged_without_retry_or_result(self):
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        cases = (
+            ('src.alpha_vantage_client', 'RETRIEVAL'),
+            ('src.fundamental_analysis', 'FUNDAMENTAL'),
+            ('src.risk_analysis', 'RISK'),
+            ('src.synthesis', 'SYNTHESIS'),
+            ('src.analysis', 'VALIDATION'),
+            ('src.multi_agent', 'VALIDATION'),
+        )
+        for module, expected in cases:
+            namespace = {'__name__': module}
+            exec('def fail(*args, **kwargs):\n    raise ValueError("Specialist returned a mismatched result.")', namespace)
+            result = None
+            with self.subTest(module=module), patch(
+                'src.dashboard.research_adapter.run_stock_research', side_effect=namespace['fail']
+            ) as pipeline, self.assertLogs('src.dashboard.research_adapter', level='ERROR') as logs:
+                with self.assertRaises(ResearchRunError) as caught:
+                    result = run_research('AAPL')
+                pipeline.assert_called_once()
+            self.assertIsNone(result)
+            self.assertIn('stage=' + expected, logs.output[0])
+            self.assertIn('exception=ValueError', logs.output[0])
+            self.assertIn('Specialist returned a mismatched result.', logs.output[0])
+            self.assertNotIn('mismatched', str(caught.exception))
+
+    def test_nested_risk_parser_retains_stage_and_redacts_allowlisted_text(self):
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        parser = {'__name__': 'src.fundamental_analysis'}
+        exec('def fail():\n    raise ValueError("Specialist returned a mismatched result.")', parser)
+        risk = {'__name__': 'src.risk_analysis', 'parser': parser['fail']}
+        exec('def fail(*args, **kwargs):\n    parser()', risk)
+        with patch.dict('os.environ', {'OPENAI_API_KEY': 'mismatched'}), patch(
+            'src.dashboard.research_adapter.run_stock_research', side_effect=risk['fail']
+        ), self.assertLogs('src.dashboard.research_adapter', level='ERROR') as logs:
+            with self.assertRaises(ResearchRunError): run_research('AAPL')
+        self.assertIn('stage=RISK', logs.output[0])
+        self.assertIn('[REDACTED]', logs.output[0])
+        self.assertNotIn('mismatched', logs.output[0])
+
 
 class EnvironmentBootstrapTests(unittest.TestCase):
     def test_literal_credentials_and_environment_precedence(self):
@@ -1080,3 +1120,42 @@ class PerformanceDashboardTests(unittest.TestCase):
         with patch('src.dashboard.performance.load_performance', return_value=data):
             app.run()
             self.assertFalse(app.get('vega_lite_chart'))
+
+
+class ProviderOperationDiagnosticTests(unittest.TestCase):
+    def test_provider_operations_classification_and_private_ui(self):
+        import io, json
+        from src import alpha_vantage_client as api
+        from src.dashboard.research_adapter import run_research, ResearchRunError
+        for function, operation in api._OPERATIONS.items():
+            for key, expected in (('Error Message','ERROR_MESSAGE'),('Information','INFORMATION'),('Note','NOTE')):
+                with self.subTest(function=function,key=key), patch.dict('os.environ', {'ALPHA_VANTAGE_API_KEY':'fixture-secret'}), patch(
+                    'src.alpha_vantage_client.urlopen',return_value=io.BytesIO(json.dumps({key:'fixture-secret raw-private-body'}).encode())) as network, patch(
+                    'src.alpha_vantage_client._pace_request'), patch(
+                    'src.dashboard.research_adapter.run_stock_research',side_effect=lambda *a,**k: api._request(function,'AAPL')), \
+                    self.assertLogs(level='ERROR') as logs:
+                    with self.assertRaises(ResearchRunError) as caught:run_research('AAPL')
+                    network.assert_called_once()
+                text=' '.join(logs.output)
+                self.assertIn('stage=RETRIEVAL',text)
+                self.assertIn('operation='+operation,text)
+                self.assertIn('function='+function,text)
+                self.assertIn('provider_response_type='+expected,text)
+                for private in ('fixture-secret','raw-private-body'):
+                    self.assertNotIn(private,text)
+                    self.assertNotIn(private,str(caught.exception))
+
+    def test_empty_malformed_network_and_success_unchanged(self):
+        import io
+        from urllib.error import URLError
+        from src import alpha_vantage_client as api
+        for body, expected in ((b'{}','EMPTY_RESPONSE'),(b'[]','MALFORMED_RESPONSE'),(b'{','MALFORMED_RESPONSE')):
+            with patch.dict('os.environ',{'ALPHA_VANTAGE_API_KEY':'fixture'}), patch('src.alpha_vantage_client._pace_request'), patch('src.alpha_vantage_client.urlopen',return_value=io.BytesIO(body)):
+                with self.assertRaises(RuntimeError) as caught:api.get_company_overview('AAPL')
+                self.assertEqual(caught.exception.provider_response_type,expected)
+        with patch.dict('os.environ',{'ALPHA_VANTAGE_API_KEY':'fixture'}), patch('src.alpha_vantage_client._pace_request'), patch('src.alpha_vantage_client.urlopen',side_effect=URLError('private-url')):
+            with self.assertRaises(RuntimeError) as caught:api.get_company_overview('AAPL')
+            self.assertEqual(caught.exception.provider_response_type,'NETWORK_ERROR')
+        with patch.dict('os.environ',{'ALPHA_VANTAGE_API_KEY':'fixture'}), patch('src.alpha_vantage_client._pace_request'), patch('src.alpha_vantage_client.urlopen',return_value=io.BytesIO(b'{"Symbol":"AAPL"}')) as network:
+            self.assertEqual(api.get_company_overview('AAPL'),{'Symbol':'AAPL'})
+            network.assert_called_once()

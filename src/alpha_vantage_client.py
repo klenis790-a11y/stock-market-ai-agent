@@ -57,7 +57,46 @@ def get_news_sentiment(ticker: str) -> dict:
     return _request("NEWS_SENTIMENT", tickers=ticker, limit=10, sort="LATEST")
 
 
-def _request(function: str, ticker: str | None = None, *, reject_duplicate_keys: bool = False, **params: str | int) -> dict:
+# Fixed diagnostic vocabulary: never derive log labels from request parameters or bodies.
+_OPERATIONS = {
+    'OVERVIEW': 'company_overview', 'GLOBAL_QUOTE': 'global_quote',
+    'INCOME_STATEMENT': 'income_statement', 'BALANCE_SHEET': 'balance_sheet',
+    'CASH_FLOW': 'cash_flow', 'EARNINGS': 'earnings',
+    'NEWS_SENTIMENT': 'news_sentiment', 'EARNINGS_CALL_TRANSCRIPT': 'earnings_call_transcript',
+    'TIME_SERIES_DAILY_ADJUSTED': 'daily_adjusted', 'TIME_SERIES_DAILY': 'daily_raw',
+}
+
+
+def _request(function, ticker=None, *, reject_duplicate_keys=False, **params):
+    try:
+        return _request_impl(function, ticker, reject_duplicate_keys=reject_duplicate_keys, **params)
+    except RuntimeError as error:
+        message = str(error)
+        classification = 'MALFORMED_RESPONSE'
+        for prefix, kind in (
+            ('Alpha Vantage Error Message:', 'ERROR_MESSAGE'),
+            ('Alpha Vantage Information:', 'INFORMATION'),
+            ('Alpha Vantage Note:', 'NOTE'),
+            ('Alpha Vantage HTTP error:', 'HTTP_ERROR'),
+            ('Alpha Vantage network request', 'NETWORK_ERROR'),
+            ('Alpha Vantage returned no data', 'EMPTY_RESPONSE'),
+            ('ALPHA_VANTAGE_API_KEY must', 'CONFIGURATION_ERROR'),
+        ):
+            if message.startswith(prefix):
+                classification = kind
+                break
+        error.provider_operation = _OPERATIONS.get(function, 'unknown')
+        error.provider_function = function if function in _OPERATIONS else 'UNKNOWN'
+        error.provider_response_type = classification
+        # Also identifies optional failures swallowed by the existing pipeline.
+        import logging
+        logging.getLogger(__name__).error(
+            'Alpha Vantage retrieval failed operation=%s function=%s provider_response_type=%s',
+            error.provider_operation, error.provider_function, classification)
+        raise
+
+
+def _request_impl(function: str, ticker: str | None = None, *, reject_duplicate_keys: bool = False, **params: str | int) -> dict:
     api_key = os.environ.get("ALPHA_VANTAGE_API_KEY")
     if not api_key or not api_key.strip():
         raise RuntimeError("ALPHA_VANTAGE_API_KEY must be configured.")
