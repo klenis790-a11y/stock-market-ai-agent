@@ -2,11 +2,34 @@
 
 ## Status
 
-Implementation and offline regression review complete. All **412 tests pass**.
-Manual live dashboard validation remains **PENDING**: the V0.7G browser smoke was
-skipped when browser/approval usage limits were reached. This is a validation gap,
-not a demonstrated product failure. This checkpoint makes no new live API calls
-and does not repeat or circumvent that browser attempt. No release tag is created.
+V0.7 is **COMPLETE and release-ready**. All **412 tests pass**. Manual live
+dashboard validation is **PASS**, based on the controlled test reported by the
+user. The earlier browser-validation gap is resolved. This documentation update
+makes no additional live calls and creates no commit or release tag.
+
+### Controlled manual dashboard validation
+
+The user tested AAPL with `SHORT_TERM_1_TO_5_SESSIONS` (1–5 trading sessions).
+The initial attempt stopped correctly because XNYS compatibility had not been
+confirmed: `stage=INPUT`, `exception=ValueError`. No automatic retry occurred.
+This demonstrated the compatibility guard and explicit-run boundary.
+
+After explicitly confirming XNYS compatibility, one controlled Technical Research
+run completed successfully. The dashboard rendered AAPL, a BULLISH TechnicalSignal,
+confidence 73/100, the selected horizon, explicit market `as_of` and latest completed
+session. It displayed “Technical research signal — not a trade instruction” and
+described confidence as evidence strength, not probability.
+
+The user observed summary/thesis, deterministic features, stable Txxx evidence IDs,
+RETRIEVED FACT and CALCULATED METRIC classifications, supporting evidence, a conflicting
+evidence section, confirmation conditions, invalidation conditions with FORECAST
+labeling, and applicable risk/missing-data presentation. Interpretation/condition
+labels do not change the deterministic evidence catalog's no-forecast contract.
+
+This validates execution and presentation only. The BULLISH signal is not evidence
+of profitability or predictive skill. This smoke test does not establish validation
+of live saving, enrollment, collection or future outcomes; no such actions are
+performed by this sign-off update. All methodological limitations remain in force.
 
 ## Objective
 
@@ -140,7 +163,8 @@ fallback signal. No specialist rerun or indicator calculation belongs here.
 Prompt and deterministic checks prohibit invented support/resistance and execution
 instructions; they do not constitute a general proof that all natural-language
 reasoning is correct or free of outside knowledge. A prior synthetic live model
-compatibility check is distinct from the still-pending live dashboard workflow.
+compatibility check is distinct from the subsequently successful, user-reported
+live dashboard research validation recorded above.
 
 ## Signal Contract
 
@@ -223,7 +247,8 @@ round trips, legacy databases, atomic pairs, duplicates, prospective enrollment,
 directional/benchmark denominators and Streamlit AppTest/helper rerun behavior.
 Unit tests use mocked providers and temporary databases: zero live Alpha Vantage
 and zero live OpenAI requests. No user database is used for checkpoint writes.
-Manual live dashboard validation remains pending; no new startup smoke is claimed.
+Manual live dashboard research validation passed as reported above; no additional
+live run or startup smoke is performed for this documentation update.
 
 ## Network / Side-Effect Boundaries
 
@@ -251,7 +276,8 @@ No new numerical, charting, ORM, database or provider dependency is introduced.
 - Generation time is not separately recorded; save time differs from market as-of.
 - Caller timestamps require trust; persistence is not a cryptographic audit ledger.
 - Provider entitlement and availability remain external dependencies.
-- Full manual live dashboard validation remains pending.
+- The manual smoke validates research execution/presentation, not live persistence,
+  evaluation collection, future outcomes or predictive skill.
 
 ## Professional Skills Demonstrated
 

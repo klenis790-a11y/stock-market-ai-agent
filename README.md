@@ -258,7 +258,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.4 Multi-Agent System — COMPLETE
 - V0.5 Interface — COMPLETE
 - V0.6 Evaluation Infrastructure — COMPLETE
-- V0.7 Technical & Short-Term Research — implementation and offline tests COMPLETE; manual live dashboard validation PENDING
+- V0.7 Technical & Short-Term Research — COMPLETE and release-ready; offline tests and manual live research validation PASS
 - V0.7A Market Data Foundation — COMPLETE
 - V0.7B Deterministic Technical Features — COMPLETE
 - V0.7C Technical Snapshot & Evidence Catalog — COMPLETE
@@ -266,7 +266,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7E Technical Signal Persistence — COMPLETE
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
-- Next: manual live dashboard validation before V0.7 release sign-off
+- V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
 - Potential later milestone: V0.8 Horizon-Aware Research Integration — tentative, not started
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -303,5 +303,6 @@ No charts or trading controls are added. See [technical dashboard](docs/V0_7_TEC
 
 See the [V0.7 checkpoint](docs/V0_7_CHECKPOINT.md) for the integrated architecture,
 412-test regression review, exact methodology and known limitations. Implementation
-is complete; manual live dashboard validation remains pending. No predictive-skill
+is complete and release-ready; user-reported controlled AAPL manual live research
+validation passed. This confirms execution only. No predictive-skill
 or profitable-strategy claim is made.
