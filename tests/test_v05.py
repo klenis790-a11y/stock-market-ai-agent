@@ -17,7 +17,7 @@ class UIContractTests(unittest.TestCase):
 
     def test_navigation(self):
         self.assertEqual([p.key for p in ui.DASHBOARD_PAGES],
-                         ['home', 'research', 'portfolio', 'agent_room', 'decision_history', 'performance'])
+                         ['home', 'research', 'portfolio', 'agent_room', 'decision_history', 'performance', 'technical_research'])
         with self.assertRaises(FrozenInstanceError): ui.DASHBOARD_PAGES[0].title = 'changed'
         with self.assertRaises(ValueError): ui.DashboardPage('', 'Title')
 
@@ -112,7 +112,7 @@ class DashboardShellTests(unittest.TestCase):
         with patch('socket.socket.connect', side_effect=AssertionError('Network forbidden')):
             app = AppTest.from_file(str(root / 'dashboard.py')).run()
             self.assertFalse(app.exception)
-            self.assertEqual(len(app.sidebar.radio[0].options), 6)
+            self.assertEqual(len(app.sidebar.radio[0].options), 7)
             for key, title in [('home', 'Home'), ('research', 'Research'), ('portfolio', 'Portfolio'),
                                ('agent_room', 'Agent Room'), ('decision_history', 'Decision History'), ('performance', 'Performance')]:
                 app.sidebar.radio[0].set_value(key).run()
@@ -129,7 +129,7 @@ class DashboardShellTests(unittest.TestCase):
             tree = ast.parse(Path(module.__file__).read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.ImportFrom):
-                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio', 'src.dashboard.performance_adapter', 'src.dashboard.evaluation'))
+                    self.assertIn(node.module, ('src.ui_contracts', 'src.dashboard.components', 'src.models', 'src.dashboard.research_adapter', 'src.dashboard.portfolio_adapter', 'src.dashboard.research', 'src.dashboard.history_adapter', 'src.dashboard.decision_save_adapter', 'src.dashboard.portfolio', 'src.dashboard.performance_adapter', 'src.dashboard.evaluation', 'src.dashboard'))
                 if isinstance(node, ast.Import):
                     self.assertEqual([alias.name for alias in node.names], ['streamlit'])
 

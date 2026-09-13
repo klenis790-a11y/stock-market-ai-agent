@@ -2,12 +2,12 @@
 import streamlit as st
 from src.configuration import load_local_environment
 from src.ui_contracts import DASHBOARD_PAGES
-from src.dashboard import home, research, portfolio, agent_room, decision_history, performance
+from src.dashboard import home, research, portfolio, agent_room, decision_history, performance, technical_research
 
 RENDERERS = {
     'home': home.render, 'research': research.render, 'portfolio': portfolio.render,
     'agent_room': agent_room.render, 'decision_history': decision_history.render,
-    'performance': performance.render,
+    'performance': performance.render, 'technical_research': technical_research.render,
 }
 
 st.set_page_config(page_title='Investment Research', layout='wide')

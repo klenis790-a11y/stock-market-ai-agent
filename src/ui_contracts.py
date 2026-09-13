@@ -46,6 +46,7 @@ DASHBOARD_PAGES = (
     DashboardPage('agent_room', 'Agent Room'),
     DashboardPage('decision_history', 'Decision History'),
     DashboardPage('performance', 'Performance'),
+    DashboardPage('technical_research', 'Technical Research'),
 )
 
 

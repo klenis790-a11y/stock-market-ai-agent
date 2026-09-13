@@ -258,14 +258,15 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.4 Multi-Agent System — COMPLETE
 - V0.5 Interface — COMPLETE
 - V0.6 Evaluation Infrastructure — COMPLETE
-- V0.7 Technical & Short-Term Research — IN PROGRESS
+- V0.7 Technical & Short-Term Research — implementation COMPLETE; final integration/checkpoint pending
 - V0.7A Market Data Foundation — COMPLETE
 - V0.7B Deterministic Technical Features — COMPLETE
 - V0.7C Technical Snapshot & Evidence Catalog — COMPLETE
 - V0.7D Technical Analyst & Short-Term Signal Contract — COMPLETE
 - V0.7E Technical Signal Persistence — COMPLETE
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
-- V0.7G Technical Research Dashboard Integration — next
+- V0.7G Technical Research Dashboard Integration — COMPLETE
+- Next: V0.7 final integration/checkpoint
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
 performance is claimed.
@@ -293,4 +294,8 @@ No automatic save or evaluation occurs. See [technical signal persistence](docs/
 
 V0.7F links explicitly enrolled technical signals to shared calendar/adjusted-price evaluation.
 Predeclared 5/20-session checkpoints, VOO comparison, and directional summaries remain
-separate from trades; no technical dashboard exists yet. See [technical evaluation](docs/V0_7_TECHNICAL_EVALUATION.md).
+separate from trades; the Technical Research page exposes this explicit workflow. See [technical evaluation](docs/V0_7_TECHNICAL_EVALUATION.md).
+
+V0.7G adds **Technical Research** to the dashboard: explicit research, same-run features/evidence,
+explicit signal save, preserved history, prospective enrollment and later observation collection.
+No charts or trading controls are added. See [technical dashboard](docs/V0_7_TECHNICAL_DASHBOARD.md).
