@@ -154,12 +154,12 @@ class HorizonIntegrationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             participation(Admission.ADMITTED, 'RECENT')
 
-    def test_unknown_without_thresholds_at_any_age(self):
-        for at in (instant(), instant('2030-01-01T00:00:00+00:00')):
+    def test_approved_thresholds_replace_unknown_placeholder(self):
+        for at, expected in ((instant(), Freshness.FRESH), (instant('2030-01-01T00:00:00+00:00'), Freshness.STALE)):
             context = build_integration_context('TEST', 'SHORT', at, technical=self.technical)
             self.assertEqual(context.technical.status, Admission.ADMITTED)
-            self.assertEqual(context.technical_freshness, Freshness.UNKNOWN)
-            self.assertIsNone(context.freshness_policy_version)
+            self.assertEqual(context.technical_freshness, expected)
+            self.assertEqual(context.freshness_policy_version, 'technical-freshness-v1')
             self.assertIsNone(context.usable_primary_authority)
 
     def test_utc_naive_and_future(self):
@@ -198,7 +198,7 @@ class HorizonIntegrationTests(unittest.TestCase):
         context = build_integration_context('TEST', 'LONG', instant(), fundamental=fundamental(), technical=self.technical)
         expected = tuple('TECHNICAL:' + eid for eid in self.technical.signal['analysis']['missing_evidence_ids'])
         self.assertEqual(context.non_blocking_missing_data, expected)
-        self.assertIn('MISSING_DATA_SEVERITY_POLICY_UNAVAILABLE', context.blocking_missing_data)
+        self.assertIn('PRIMARY_RESEARCH_UNKNOWN', context.blocking_missing_data)
 
     def test_context_deep_snapshot_and_namespaces(self):
         source = fundamental()
@@ -244,3 +244,198 @@ class HorizonIntegrationTests(unittest.TestCase):
                 target['provenance'][key] = value
             record = replace(self.technical, signal_json=json.dumps(signal), evidence_json=json.dumps(packet))
             self.assertIn(reason, admit_technical(record, 'TEST', instant()).reasons)
+
+
+class FreshnessProvenanceTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No live network'))
+        guard.start()
+        self.addCleanup(guard.stop)
+        self.record, _, _ = fixtures.TechnicalSignalPersistenceTests().fixture('BULLISH')
+
+    def test_all_technical_age_boundaries(self):
+        from src.horizon_integration import technical_freshness
+        from src.market_calendar import USMarketCalendar
+        cal = USMarketCalendar()
+        session = datetime.fromisoformat(self.record.signal['provenance']['latest_completed_session']).date()
+        for native, cases in [('SHORT_TERM_1_TO_5_SESSIONS', [(0,'FRESH'),(2,'FRESH'),(3,'AGING'),(5,'AGING'),(6,'STALE')]),
+                              ('SWING_1_TO_4_WEEKS', [(0,'FRESH'),(10,'FRESH'),(11,'AGING'),(20,'AGING'),(21,'STALE')])]:
+            signal = self.record.signal
+            signal['horizon'] = native
+            record = replace(self.record, signal_json=json.dumps(signal))
+            for age, state in cases:
+                at = instant('2025-03-11T14:00:00+00:00') if age == 0 else cal.advance_sessions(session, age).closes_at
+                result = technical_freshness(record, at, calendar=cal)
+                self.assertEqual((result.state, result.completed_session_age), (state, age))
+                self.assertEqual(result.policy_version, 'technical-freshness-v1')
+
+    def _dated_record(self, session):
+        from src.market_calendar import USMarketCalendar
+        close = USMarketCalendar().session_on_or_after(datetime.fromisoformat(session).date()).closes_at
+        signal, packet = self.record.signal, self.record.evidence_packet
+        for item in (signal, packet):
+            p = item['provenance']
+            p.update(latest_completed_session=session, first_included_session=session,
+                     expected_last_session=session, requested_as_of=close.isoformat(), retrieved_at=close.isoformat())
+        return replace(self.record, created_at=close.isoformat(), signal_json=json.dumps(signal), evidence_json=json.dumps(packet))
+
+    def test_weekend_holiday_halfday_and_exact_close(self):
+        from src.horizon_integration import technical_freshness
+        record = self._dated_record('2025-07-02')
+        for at, age in [('2025-07-03T12:59:00-04:00',0), ('2025-07-03T13:00:00-04:00',1),
+                        ('2025-07-04T18:00:00-04:00',1), ('2025-07-05T18:00:00-04:00',1),
+                        ('2025-07-06T18:00:00-04:00',1), ('2025-07-07T16:00:00-04:00',2)]:
+            self.assertEqual(technical_freshness(record, instant(at)).completed_session_age, age)
+
+    def test_unknown_future_missing_and_unsupported(self):
+        from src.horizon_integration import technical_freshness
+        for at in (datetime(2025,3,1), instant('2025-03-01T00:00:00+00:00')):
+            self.assertEqual(technical_freshness(self.record, at).state, Freshness.UNKNOWN)
+        for key, value in [('horizon','UNSUPPORTED'), ('latest_completed_session',None)]:
+            signal, packet = self.record.signal, self.record.evidence_packet
+            if key == 'horizon': signal[key] = value
+            else:
+                signal['provenance'][key] = value
+                packet['provenance'][key] = value
+            corrupted = replace(self.record)
+            object.__setattr__(corrupted, 'signal_json', json.dumps(signal))
+            object.__setattr__(corrupted, 'evidence_json', json.dumps(packet))
+            self.assertEqual(technical_freshness(corrupted, instant()).state, Freshness.UNKNOWN)
+
+    def _pipeline(self, horizon='LONG', fail=False):
+        from src.models import InvestmentAnalysis
+        from src.research_pipeline import run_stock_research
+        source = fundamental()
+        allowed = InvestmentAnalysis.__dataclass_fields__
+        values = {k:v for k,v in asdict(source.record).items() if k in allowed}
+        # Original typed interpretation objects are preserved by the mocked existing analyzer.
+        values = {k:getattr(source.record,k) for k in values}
+        values['portfolio_assessment'] = 'Portfolio context not supplied.'
+        analysis = InvestmentAnalysis(**values)
+        packet = json.loads(source.evidence_json)
+        packet['source'] = 'Alpha Vantage'
+        captured = []
+        with patch('src.research_pipeline.build_stock_evidence', return_value=packet) as retrieval, \
+             patch('src.research_pipeline.analyze_investment', side_effect=ValueError('failed') if fail else None, return_value=analysis) as analyst, \
+             patch('src.research_pipeline.datetime') as clock:
+            clock.now.side_effect = [instant('2025-03-12T14:00:00+00:00'),
+                                    instant('2025-03-12T14:30:00+00:00'), instant()]
+            if fail:
+                with self.assertRaises(ValueError):
+                    run_stock_research('TEST', persist_decision=False, investment_horizon=horizon,
+                        integration_run_id='run-1', on_fundamental_artifact=captured.append)
+            else:
+                result = run_stock_research('TEST', persist_decision=False, investment_horizon=horizon,
+                    integration_run_id='run-1', on_fundamental_artifact=captured.append)
+                self.assertIs(result, analysis)
+            retrieval.assert_called_once()
+            analyst.assert_called_once()
+        return captured
+
+    def test_pipeline_prospective_capture_and_cutoffs(self):
+        artifact = self._pipeline()[0]
+        p = artifact.verified()
+        self.assertEqual(p['policy_version'], 'fundamental-provenance-v1')
+        self.assertEqual(p['methodology_version'], 'fundamental-single-agent-path-v1')
+        self.assertEqual(p['data_cutoff_as_of'], '2025-03-12T14:30:00.000000Z')
+        self.assertEqual(p['coverage']['earnings']['status'], 'UNAVAILABLE')
+        self.assertEqual(p['coverage']['earnings']['observed_dates'], [])
+        self.assertEqual(p['event_currentness'], 'UNKNOWN')
+        self.assertEqual(artifact.analysis['recommendation'], 'Accumulate')
+        self.assertEqual(artifact.evidence['catalog'][0]['evidence_id'], 'E001')
+        self.assertEqual(self._pipeline(fail=True), [])
+
+    def test_ready_same_run_and_historical_unknown(self):
+        artifact = self._pipeline()[0]
+        clean_signal = self.record.signal
+        clean_signal['analysis']['risk_notes'] = []
+        self.record = replace(self.record, signal_json=json.dumps(clean_signal))
+        context = build_integration_context('TEST','LONG',instant(),fundamental=artifact,
+                                             technical=self.record,integration_run_id='run-1')
+        self.assertEqual(context.readiness, 'SYNTHESIS_READY')
+        self.assertEqual(context.fundamental_freshness, Freshness.FRESH)
+        self.assertEqual(context.fundamental_provenance_status, 'CURRENT_SYSTEM_TRUSTED')
+        self.assertEqual(context.technical_applicability, 'CONTEXT_ONLY')
+        self.assertEqual(context.conflict.classification, Conflict.ALIGNED)
+        self.assertTrue(context.non_blocking_missing_data)  # Missing long SMA does not block.
+        for run, at in [('other',instant()), ('run-1',instant()+timedelta(seconds=1))]:
+            later = build_integration_context('TEST','LONG',at,fundamental=artifact,
+                                              technical=self.record,integration_run_id=run)
+            self.assertEqual(later.fundamental_freshness, Freshness.UNKNOWN)
+            self.assertEqual(later.readiness, 'BLOCKED')
+
+    def test_legacy_and_malformed_provenance_not_upgraded(self):
+        context = build_integration_context('TEST','LONG',instant(),fundamental=fundamental(),technical=self.record)
+        self.assertEqual(context.fundamental_provenance_status, 'LEGACY_UNKNOWN')
+        self.assertEqual(context.readiness, 'BLOCKED')
+        artifact = self._pipeline()[0]
+        p = artifact.provenance
+        p['run_id'] = 'forged'
+        malformed = replace(artifact, provenance_json=json.dumps(p))
+        context = build_integration_context('TEST','LONG',instant(),fundamental=malformed,technical=self.record)
+        self.assertIn('FUNDAMENTAL:INVALID_PROVENANCE', context.blocking_missing_data)
+
+    def test_roles_stale_primary_and_native_mismatch(self):
+        artifact = self._pipeline()[0]
+        for h, role in [('SHORT','CONTEXT_ONLY'),('SWING','SECONDARY'),('MEDIUM','UNKNOWN'),('LONG','PRIMARY')]:
+            result = build_integration_context('TEST',h,instant(),fundamental=artifact,
+                                              technical=self.record,integration_run_id='run-1')
+            self.assertEqual(result.fundamental_applicability, role)
+        result = build_integration_context('TEST','SHORT',instant('2025-04-01T00:00:00+00:00'), technical=self.record)
+        self.assertEqual(result.technical.status, Admission.ADMITTED)
+        self.assertIn('PRIMARY_RESEARCH_STALE',result.blocking_missing_data)
+        self.assertEqual(result.conflict.classification,Conflict.INSUFFICIENT_EVIDENCE)
+
+    def test_no_callback_no_capture_and_invalid_request_preflight(self):
+        from src.research_pipeline import run_stock_research
+        with patch('src.research_pipeline.build_stock_evidence') as retrieval:
+            with self.assertRaises(ValueError):
+                run_stock_research('TEST',on_fundamental_artifact=lambda _:None)
+            retrieval.assert_not_called()
+        with patch('src.fundamental_provenance._capture') as capture, \
+             patch('src.research_pipeline.build_stock_evidence',return_value={}), \
+             patch('src.research_pipeline.analyze_investment',return_value='unchanged'):
+            self.assertEqual(run_stock_research('TEST'), 'unchanged')
+            capture.assert_not_called()
+
+    def test_risk_ambiguity_is_not_silently_waived(self):
+        artifact = self._pipeline()[0]
+        result = build_integration_context('TEST','LONG',instant(), fundamental=artifact,
+                                          technical=self.record,integration_run_id='run-1')
+        self.assertEqual(result.readiness, 'BLOCKED')
+        self.assertIn('TECHNICAL_RISK_APPLICABILITY_UNRESOLVED', result.blocking_missing_data)
+        self.assertEqual(result.technical.source, self.record.signal)
+
+    def test_current_artifact_immutable_and_temporally_bound(self):
+        artifact = self._pipeline()[0]
+        original = artifact.analysis
+        detached = artifact.analysis
+        detached['recommendation'] = 'Avoid'
+        self.assertEqual(artifact.analysis, original)
+        with self.assertRaises(FrozenInstanceError):
+            artifact.analysis_json = '{}'
+        result = build_integration_context('TEST','LONG',instant('2025-03-12T14:59:59+00:00'),
+                                          fundamental=artifact,technical=self.record,integration_run_id='run-1')
+        self.assertIn('FUNDAMENTAL:INVALID_TEMPORAL_ORDER',result.blocking_missing_data)
+
+    def test_multi_agent_capture_keeps_same_run_path(self):
+        from types import SimpleNamespace
+        from src.models import InvestmentAnalysis
+        from src.research_pipeline import run_stock_research
+        seed = self._pipeline()[0]
+        result = InvestmentAnalysis(**seed.analysis)
+        captured = []
+        context = SimpleNamespace(specialist_results=[SimpleNamespace(specialist_name='fundamental'),
+                                                      SimpleNamespace(specialist_name='risk')])
+        with patch('src.research_pipeline.build_stock_evidence',return_value=seed.evidence), \
+             patch('src.research_pipeline.run_specialists',return_value=context) as specialists, \
+             patch('src.research_pipeline.synthesize_investment_analysis',return_value=result) as synthesis, \
+             patch('src.research_pipeline.analyze_investment') as single:
+            returned = run_stock_research('TEST',use_multi_agent=True,persist_decision=False,
+                investment_horizon='LONG',integration_run_id='multi-run',on_fundamental_artifact=captured.append)
+        self.assertIs(returned,result)
+        specialists.assert_called_once()
+        synthesis.assert_called_once()
+        single.assert_not_called()
+        self.assertEqual(captured[0].verified()['specialists'],['fundamental','risk'])
+        self.assertEqual(captured[0].provenance['methodology_version'],'fundamental-multi-agent-path-v1')

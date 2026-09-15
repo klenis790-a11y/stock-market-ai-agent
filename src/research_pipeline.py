@@ -6,7 +6,7 @@ from src.decision_memory import build_decision_memory_context
 from src.decision_history import save_analysis_decision
 from src.decision_store import DecisionStore
 from dataclasses import replace
-from datetime import date
+from datetime import date, datetime, timezone
 import logging
 
 from src import alpha_vantage_client as api
@@ -75,6 +75,8 @@ def run_stock_research(
     persist_decision: bool = True,
     use_multi_agent: bool = False,
     specialist_names: list[str] | None = None,
+    integration_run_id: str | None = None,
+    on_fundamental_artifact: Callable | None = None,
     on_memory: Callable[[DecisionMemoryContext], None] | None = None,
     on_decision_saved: Callable[[DecisionRecord], None] | None = None,
     on_specialists_complete: Callable[[list[SpecialistAnalysis]], None] | None = None,
@@ -98,7 +100,13 @@ def run_stock_research(
         not isinstance(decision_timestamp, str) or not decision_timestamp.strip()
     ):
         raise ValueError("decision_timestamp is required for decision persistence.")
+    if on_fundamental_artifact is not None and (
+        not isinstance(integration_run_id, str) or not integration_run_id.strip()
+    ):
+        raise ValueError("Explicit integration_run_id required for provenance capture.")
+    retrieval_started = datetime.now(timezone.utc) if on_fundamental_artifact is not None else None
     evidence = build_stock_evidence(ticker)
+    retrieval_completed = datetime.now(timezone.utc) if on_fundamental_artifact is not None else None
     if use_decision_memory:
         memory_context = build_decision_memory_context(decision_store, evidence["ticker"], memory_limit)
     if memory_context is not None and on_memory is not None:
@@ -114,6 +122,16 @@ def run_stock_research(
     else:
         result = analyze_investment(evidence,
                                     **({"memory_context": memory_context} if memory_context is not None else {}))
+    if on_fundamental_artifact is not None:
+        from src.fundamental_provenance import _capture
+        from src.openai_client import MODEL
+        artifact = _capture(result, evidence, run_id=integration_run_id,
+            native_horizon=investment_horizon, started=retrieval_started,
+            cutoff=retrieval_completed, completed=datetime.now(timezone.utc),
+            multi_agent=use_multi_agent,
+            specialists=[item.specialist_name for item in synthesis_context.specialist_results] if use_multi_agent else [],
+            model=MODEL, memory_used=memory_context is not None)
+        on_fundamental_artifact(artifact)
     if persist_decision and decision_store is not None:
         saved = save_analysis_decision(result, decision_store, decision_timestamp, investment_horizon)
         if on_decision_saved is not None:

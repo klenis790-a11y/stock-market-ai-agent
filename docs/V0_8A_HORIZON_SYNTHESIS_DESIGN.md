@@ -459,3 +459,12 @@ Fundamental operational FRESH is limited to trusted same-run/refreshed acquisiti
 not proof of absence of material events. Historical event currentness remains unknown;
 no calendar-age shortcut or legacy version backfill is authorized. Step 3 implementation
 and prospective pipeline/dashboard wiring are not completed by this design update.
+
+## Step 3B runtime clarification
+
+The [policy document's implementation section](V0_8A_FRESHNESS_PROVENANCE_POLICY.md#step-3b-implementation)
+now describes approved freshness, prospective capture and conservative readiness.
+It supersedes Step 2's universal UNKNOWN placeholder behavior. Legacy Fundamental
+freshness stays UNKNOWN; supported same-run provenance can qualify operationally.
+No Horizon Synthesis Agent or AI output fields are implemented. Unresolved risk,
+native applicability and missing-data dependencies remain explicit blockers.

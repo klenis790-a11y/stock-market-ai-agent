@@ -1,8 +1,8 @@
-"""Pure V0.8A admission/context foundation. No freshness thresholds or AI synthesis.
+"""Pure V0.8A admission, approved freshness and readiness. No AI synthesis.
 
 Provenance attestations are caller-owned facts, not proof inferred from text. The
-current context builder has no operational freshness/applicability policy and thus
-cannot authorize synthesis. Lower-level policy functions are independently testable.
+context applies versioned policies and blocks unresolved applicability/risk facts.
+Lower-level policy functions are independently testable.
 """
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime
@@ -340,41 +340,142 @@ class IntegrationContext:
     methodology_version: str = CONTEXT_VERSION
     admission_version: str = ADMISSION_VERSION
     normalization_version: str = NORMALIZATION_VERSION
-    freshness_policy_version: None = None
+    freshness_policy_version: str = 'technical-freshness-v1'
+    technical_session_age: int | None = None
+    fundamental_provenance_status: str = 'LEGACY_UNKNOWN'
+    fundamental_applicability: str = 'UNKNOWN'
+    technical_applicability: str = 'UNKNOWN'
+    readiness: str = 'BLOCKED'
+    integration_policy_version: str = 'horizon-readiness-v1'
+    fundamental_policy_version: str = 'fundamental-provenance-v1'
+    calendar_version: str = USMarketCalendar.version
+
+
+@dataclass(frozen=True)
+class TechnicalFreshness:
+    state: Freshness
+    completed_session_age: int | None
+    reason: str
+    policy_version: str = 'technical-freshness-v1'
+    calendar_version: str = USMarketCalendar.version
+
+
+def technical_freshness(record, integration_as_of, *, calendar=None):
+    """Completed sessions strictly after the preserved signal session, never days."""
+    try:
+        instant = aware_utc(integration_as_of)
+        checked = admit_technical(record, record.symbol, instant, calendar=calendar)
+        if checked.status != Admission.ADMITTED:
+            return TechnicalFreshness(Freshness.UNKNOWN, None, 'RESEARCH_NOT_ADMITTED')
+        limits = {'SHORT_TERM_1_TO_5_SESSIONS': (2, 5), 'SWING_1_TO_4_WEEKS': (10, 20)}
+        fresh, last = limits[checked.native_horizon]
+        session = date.fromisoformat(checked.latest_completed_session)
+        cal = calendar or USMarketCalendar()
+        age = sum(day > session for day in cal.completed_sessions(session, instant))
+        state = Freshness.FRESH if age <= fresh else Freshness.AGING if age <= last else Freshness.STALE
+        return TechnicalFreshness(state, age, 'COMPLETED_XNYS_SESSION_AGE')
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return TechnicalFreshness(Freshness.UNKNOWN, None, 'INVALID_TIME_SESSION_OR_HORIZON')
+
+
+def _admit_current(artifact, ticker, instant):
+    from src.fundamental_provenance import CurrentFundamentalArtifact
+    if not isinstance(artifact, CurrentFundamentalArtifact):
+        return admit_fundamental(artifact, ticker, instant), None
+    try:
+        p = artifact.verified()
+        a, packet = artifact.analysis, artifact.evidence
+        if a['ticker'] != ticker or packet['ticker'] != ticker:
+            return _reject('FUNDAMENTAL', 'TICKER_MISMATCH'), None
+        direction = normalize_fundamental(a['recommendation'])
+        if utc_timestamp(p['available_at']) > _timestamp(instant):
+            return _reject('FUNDAMENTAL', 'INVALID_TEMPORAL_ORDER'), None
+        return ResearchAdmission('FUNDAMENTAL', Admission.ADMITTED, (), artifact.analysis_json,
+            artifact.evidence_json, a['recommendation'], p['native_horizon'], a['confidence_score'],
+            p['research_as_of'], p['available_at'], direction=direction,
+            metadata_json=artifact.provenance_json), p
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return _reject('FUNDAMENTAL', 'INVALID_PROVENANCE'), None
 
 
 def build_integration_context(ticker, decision_horizon, integration_as_of, *,
-                              fundamental=None, technical=None, calendar=None):
+                              fundamental=None, technical=None, calendar=None, integration_run_id=None):
     ticker = normalize_symbol(ticker)
     horizon = DecisionHorizon(decision_horizon)
     instant = aware_utc(integration_as_of)
     authority = primary_authority(horizon)
-    f = admit_fundamental(fundamental, ticker, instant)
+    f, provenance = _admit_current(fundamental, ticker, instant)
     t = admit_technical(technical, ticker, instant, calendar=calendar)
     if 'TICKER_MISMATCH' in f.reasons or 'TICKER_MISMATCH' in t.reasons:
         raise ValueError('Research ticker mismatch.')
-    primary, secondary = (t, f) if authority == Authority.TECHNICAL_PRIMARY else (f, t)
+    tf = technical_freshness(technical, instant, calendar=calendar)
+    # Bind to this run and its exact completed assessment point, not reusable ID alone.
+    current = bool(provenance and integration_run_id and provenance['run_id'] == integration_run_id
+                   and utc_timestamp(provenance['available_at']) == _timestamp(instant))
+    ff = Freshness.FRESH if current else Freshness.UNKNOWN
+    f_role = ('PRIMARY' if horizon in (DecisionHorizon.MEDIUM, DecisionHorizon.LONG)
+              else 'CONTEXT_ONLY' if horizon == DecisionHorizon.SHORT else 'SECONDARY')
+    t_role = ('PRIMARY' if horizon in (DecisionHorizon.SHORT, DecisionHorizon.SWING)
+              else 'CONTEXT_ONLY' if horizon == DecisionHorizon.LONG else 'SECONDARY')
+    if f.status != Admission.ADMITTED:
+        f_role = 'NOT_APPLICABLE'
+    elif f_role == 'PRIMARY' and f.native_horizon != horizon.value:
+        f_role = 'UNKNOWN'  # No invented parsing of legacy free-form native horizons.
+    if t.status != Admission.ADMITTED:
+        t_role = 'NOT_APPLICABLE'
+    elif t_role == 'PRIMARY' and t.native_horizon != {
+            DecisionHorizon.SHORT: 'SHORT_TERM_1_TO_5_SESSIONS',
+            DecisionHorizon.SWING: 'SWING_1_TO_4_WEEKS'}[horizon]:
+        t_role = 'UNKNOWN'
+    technical_primary = authority == Authority.TECHNICAL_PRIMARY
+    primary, secondary = (t, f) if technical_primary else (f, t)
+    primary_state = tf.state if technical_primary else ff
+    role = t_role if technical_primary else f_role
     blocking = [f'{primary.namespace}:{reason}' for reason in primary.reasons]
-    blocking.extend(('PRIMARY_FRESHNESS_POLICY_UNAVAILABLE', 'PRIMARY_APPLICABILITY_POLICY_UNAVAILABLE',
-                     'MISSING_DATA_SEVERITY_POLICY_UNAVAILABLE'))
-    nonblocking = []
-    warnings = [f'{secondary.namespace}:{reason}' for reason in secondary.reasons]
+    if primary_state not in (Freshness.FRESH, Freshness.AGING):
+        blocking.append('PRIMARY_RESEARCH_' + primary_state.value)
+    if role != 'PRIMARY':
+        blocking.append('PRIMARY_APPLICABILITY_UNRESOLVED')
+    nonblocking, warnings = [], ['PROVIDER_PUBLICATION_VINTAGE_UNVERIFIED',
+                                'FUNDAMENTAL_MATERIAL_EVENT_COVERAGE_UNKNOWN']
     for item in (f, t):
         if item.status == Admission.ADMITTED:
             source = item.source
-            if item.namespace == 'TECHNICAL':
-                # Missing optional features remain visible; no feature-count gate.
-                missing = tuple(f'TECHNICAL:{eid}' for eid in source['analysis']['missing_evidence_ids'])
-                if authority == Authority.FUNDAMENTAL_PRIMARY:
-                    nonblocking.extend(missing)
-                elif missing:
-                    warnings.extend(missing)
-                    warnings.append('TECHNICAL_PRIMARY_MISSING_DATA_SEVERITY_UNRESOLVED')
-            elif source['missing_data']:
-                warnings.append('FUNDAMENTAL_MISSING_DATA_SEVERITY_UNRESOLVED')
-    warnings.extend(('SECONDARY_RISK_REQUIREMENTS_UNRESOLVED',
-                     'PROVIDER_PUBLICATION_VINTAGE_UNVERIFIED', 'CALLER_PROVENANCE_REQUIRES_TRUST'))
-    return IntegrationContext(ticker, horizon, _timestamp(instant), f, t, authority, None,
-        Freshness.UNKNOWN, Freshness.UNKNOWN,
-        ConflictAssessment(Conflict.INSUFFICIENT_EVIDENCE, 'FRESHNESS_AND_APPLICABILITY_POLICY_UNAVAILABLE'),
-        tuple(blocking), tuple(nonblocking), tuple(warnings))
+            missing = (source['analysis']['missing_evidence_ids'] if item.namespace == 'TECHNICAL'
+                       else source['missing_data'])
+            nonblocking.extend(item.namespace + ':' + value for value in missing)
+    # The approved policy does not define which omitted secondary risk checks are safe.
+    # Do not waive unknown requirements to manufacture a ready primary-only view.
+    secondary_state = ff if technical_primary else tf.state
+    if secondary.status != Admission.ADMITTED or secondary_state not in (Freshness.FRESH, Freshness.AGING):
+        blocking.append('SECONDARY_REQUIRED_RISK_COVERAGE_UNRESOLVED')
+        warnings.extend(secondary.namespace + ':' + r for r in secondary.reasons)
+    if tf.state == Freshness.AGING:
+        warnings.append('TECHNICAL_AGING_CAUTION')
+    # Existing validity is not a structured assertion of cross-horizon risk scope.
+    # Keep unresolved material-risk relevance blocked rather than parsing prose.
+    if f.status == Admission.ADMITTED:
+        fs = f.source
+        if fs['major_risks'] or fs['bear_case']:
+            blocking.append('FUNDAMENTAL_RISK_APPLICABILITY_UNRESOLVED')
+        if not technical_primary and fs['missing_data']:
+            blocking.append('PRIMARY_MISSING_DATA_SEVERITY_UNRESOLVED')
+    if t.status == Admission.ADMITTED:
+        ts = t.source['analysis']
+        if ts['risk_notes'] or ts['conflicting_evidence_ids']:
+            blocking.append('TECHNICAL_RISK_APPLICABILITY_UNRESOLVED')
+    # Native scope facts resolve different scopes; natural-language risk conflicts
+    # remain unclassified. No semantic inference from prose is performed here.
+    classification = ConflictAssessment(Conflict.INSUFFICIENT_EVIDENCE, 'POLICY_GATES_BLOCKED')
+    if not blocking:
+        if not provenance or f.native_horizon not in ('MEDIUM', 'LONG'):
+            blocking.append('FUNDAMENTAL_SCOPE_UNRESOLVED')
+        else:
+            classification = classify_conflict(horizon, f.direction, t.recommendation,
+                scope=ScopeRelation.DISTINCT, evidence_ready=True)
+    return IntegrationContext(ticker, horizon, _timestamp(instant), f, t, authority,
+        None if blocking else authority, ff, tf.state, classification, tuple(blocking),
+        tuple(nonblocking), tuple(warnings), technical_session_age=tf.completed_session_age,
+        fundamental_provenance_status='CURRENT_SYSTEM_TRUSTED' if provenance else 'LEGACY_UNKNOWN',
+        fundamental_applicability=f_role, technical_applicability=t_role,
+        readiness='BLOCKED' if blocking else 'SYNTHESIS_READY')

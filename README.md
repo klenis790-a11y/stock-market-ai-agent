@@ -267,7 +267,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
 - V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
-- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 3A Freshness & Provenance Policy Design
+- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 3B deterministic freshness, provenance and readiness
 - V0.8B portfolio-aware decision making — future scope
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -310,9 +310,11 @@ or profitable-strategy claim is made.
 
 V0.8A begins with the [Horizon Synthesis contract and decision matrix](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md).
 Step 2 adds offline admission, horizon authority and immutable integration contexts.
-Freshness remains UNKNOWN until an approved policy exists; contexts cannot yet authorize
-synthesis. No Horizon Synthesis Agent, dashboard integration or portfolio action is implemented.
+Step 3B implements Technical freshness and prospective Fundamental sidecars;
+readiness is limited to supported same-run cases, with unresolved policies blocked. No Horizon Synthesis Agent, dashboard integration or portfolio action is implemented.
 
 V0.8A [Step 3A policy design](docs/V0_8A_FRESHNESS_PROVENANCE_POLICY.md) specifies
 Technical session-age boundaries and prospective Fundamental provenance/currentness.
-Step 3 runtime policy implementation remains pending; existing contexts remain blocked.
+Step 3B implements the approved policy with explicit SYNTHESIS_READY/BLOCKED contexts.
+Legacy provenance and unresolved risk/applicability remain blocked; dashboard wiring
+and the Horizon Synthesis Agent are not implemented.

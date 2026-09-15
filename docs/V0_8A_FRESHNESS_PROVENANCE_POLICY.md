@@ -224,3 +224,61 @@ actions, V0.8B, brokerage, trading, numerical research weights or automatic opti
 The policy is ready for human review and scoped Step 3B implementation. Operational
 Fundamental synthesis remains conditional on prospective provenance capture and
 explicit applicability/risk checks; this is not a claim that those changes exist.
+
+## Step 3B implementation
+
+`technical_freshness` now implements the exact table using admitted records and
+USMarketCalendar.completed_sessions, excluding the source session. Unknown admission,
+time or calendar inputs remain UNKNOWN. Contexts retain age and calendar version.
+
+`fundamental_provenance.py` supplies an immutable, transient sidecar. The existing
+`run_stock_research` optionally accepts `integration_run_id` and
+`on_fundamental_artifact`; without the callback its return/save behavior is unchanged.
+The callback receives the validated same-run output, original evidence/catalog,
+retrieval interval and completion time. It runs before optional legacy persistence;
+callback failure propagates without retries. No automatic capture/save/refresh or
+new network call is added. Explicit research still invokes the existing research APIs;
+unit tests mock those boundaries.
+
+Prospective manifest identifiers are `fundamental-single-agent-path-v1` and
+`fundamental-multi-agent-path-v1`, describing the current existing analysis paths.
+They preserve the actual OpenAI model, specialist names and memory-use flag. Both
+paths in this orchestrator supply no portfolio context. The catalog transport is
+`fundamental-evidence-path-catalog-v1`. These versions are not attached to legacy
+records. Source dates remain observations, with explicit unavailable/unknown event
+coverage. Acquisition cutoff is captured, not synthesized from fiscal periods.
+
+A process-local origin capability binds the complete sidecar bytes and prevents
+ordinary constructed/replaced objects from self-attesting. It is an application
+boundary, not a security guarantee against hostile Python code. Run IDs are supplied
+by the future application orchestrator and must be nonempty. To avoid introducing an
+unapproved age window, current Fundamental qualification requires both matching run ID
+and integration assessment time exactly equal to captured research completion.
+Later assessment times remain UNKNOWN, even if the ID is reused. Explicit refresh
+means another existing research call producing a new sidecar, never a retimestamp.
+
+`horizon-readiness-v1` records applicability and SYNTHESIS_READY/BLOCKED. Primary
+Technical compatibility requires exact SHORT/short-native or SWING/swing-native pairs.
+Prospective Fundamental native scope must explicitly be MEDIUM or LONG and exactly
+match a Fundamental-primary decision horizon. Free-form legacy scope text is retained
+but not interpreted. Secondary roles follow the main design. No scope is rewritten.
+
+Ready cases currently require both sources admitted and operationally current.
+Unknown required-secondary risk coverage remains blocking; this does not declare
+that secondary research must always exist in all future policies. Missing Technical
+features accepted by the source contract are preserved as non-blocking entries, not
+counted. Fundamental primary missing-data severity remains blocked where the source
+provides only unstructured missing-data prose.
+
+Unstructured Fundamental risks/bear cases or Technical risk notes/conflicting evidence
+require an applicability decision not yet provided by the approved policy. They are
+therefore conservatively blocked, not parsed for keywords or silently dismissed.
+A ready case has no such unresolved claims, supported native scopes and valid run/time
+binding. Conditional conflict helpers remain independently testable; assembled contexts
+only use verified native scope differences after these gates. This deliberately
+limits readiness rather than claiming all current research outputs are synthesis-ready.
+
+No agent exists yet. A future agent must check readiness, use the exact immutable
+context and preserve all warnings. Broader handling of unstructured risk relevance,
+primary missing-data severity and safe omission of secondary research requires a
+separate explicit policy decision. No dashboard or evaluation behavior changed.
