@@ -267,7 +267,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
 - V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
-- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 5 combined backend research — implemented
+- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 6A risk applicability policy — implemented
 - V0.8B portfolio-aware decision making — future scope
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -334,3 +334,5 @@ freshness.
 V0.8A [Step 5B sequencing](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md#step-5b--combined-research-sequencing) defines `combined-research-sequencing-v1`: Technical completes before Fundamental, preserving existing temporal gates.
 
 V0.8A [Step 5 combined research](docs/V0_8A_COMBINED_RESEARCH.md) now coordinates Technical-first research, prospective Fundamental provenance, trusted readiness and Horizon Synthesis. Dashboard/persistence remain pending.
+
+V0.8A [risk-applicability-v1](docs/V0_8A_FRESHNESS_PROVENANCE_POLICY.md#step-6a--risk-applicability) preserves valid adverse evidence as synthesis input without weakening independent readiness gates. Release review and live validation remain pending.

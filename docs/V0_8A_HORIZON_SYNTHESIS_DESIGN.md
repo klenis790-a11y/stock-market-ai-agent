@@ -570,3 +570,31 @@ policy version, not reinterpretation of historical results.
 This step implements policy representation only. Step 5 combined orchestration is
 not implemented. Existing provenance, material-event coverage limitations and all
 readiness gates remain in force; ordering alone does not guarantee readiness.
+
+## Step 6A — Risk applicability
+
+`risk-applicability-v1` supersedes the earlier blanket unresolved-risk blockers.
+For otherwise qualified research, the existence of Fundamental major_risks or
+bear_case and Technical risk_notes or valid conflicting_evidence_ids is non-blocking.
+These are original synthesis inputs, preserved with source confidence, conclusions,
+conditions and evidence. Both primary and secondary sources retain adverse evidence.
+
+Admission, provenance, exact run/completion currentness, native-horizon freshness,
+temporal integrity, methodology and missing-data requirements remain unchanged.
+Invalid Technical conflicting IDs fail existing catalog-reference validation.
+Fundamental risk statements carry existing evidence_refs; trusted current artifacts
+retain the pipeline-validated packet and origin binding. No references or semantic
+severity are invented. Legacy artifacts receive no new provenance qualification.
+
+Risk applicability is separate from authority, cross-source conflict classification
+and missing-data severity. The deterministic layer neither ranks risk probability/
+impact nor decides whether a risk changes the investment thesis. Existing Horizon
+Synthesis interprets the admitted packet; its prompt/schema already transport both
+risk collections and are unchanged. Presence of risk alone implies neither ALIGNED
+nor THESIS_CONFLICT. All other blocking conditions still stop synthesis.
+
+IntegrationContext retains `risk_applicability_version`; authoritative readiness
+recomputation compares it, rejecting unsupported or inconsistent versions. Historical
+contexts are not relabeled. Future policy changes require a new version. No source
+records, persistence, dashboard or dependency direction are changed in this step.
+No live validation was performed. Step 6 release review remains pending.

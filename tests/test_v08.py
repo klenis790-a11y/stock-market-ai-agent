@@ -361,7 +361,7 @@ class FreshnessProvenanceTests(unittest.TestCase):
             object.__setattr__(corrupted, 'evidence_json', json.dumps(packet))
             self.assertEqual(technical_freshness(corrupted, instant()).state, Freshness.UNKNOWN)
 
-    def _pipeline(self, horizon='LONG', fail=False):
+    def _pipeline(self, horizon='LONG', fail=False, risks=False):
         from src.models import InvestmentAnalysis
         from src.research_pipeline import run_stock_research
         source = fundamental()
@@ -370,6 +370,9 @@ class FreshnessProvenanceTests(unittest.TestCase):
         # Original typed interpretation objects are preserved by the mocked existing analyzer.
         values = {k:getattr(source.record,k) for k in values}
         values['portfolio_assessment'] = 'Portfolio context not supplied.'
+        if risks:
+            values['major_risks'] = [InterpretationStatement('Observed uncertainty', ['E001'])]
+            values['bear_case'] = [InterpretationStatement('Adverse thesis evidence', ['E001'])]
         analysis = InvestmentAnalysis(**values)
         packet = json.loads(source.evidence_json)
         packet['source'] = 'Alpha Vantage'
@@ -457,12 +460,12 @@ class FreshnessProvenanceTests(unittest.TestCase):
             self.assertEqual(run_stock_research('TEST'), 'unchanged')
             capture.assert_not_called()
 
-    def test_risk_ambiguity_is_not_silently_waived(self):
+    def test_valid_technical_risk_is_preserved_without_existence_block(self):
         artifact = self._pipeline()[0]
         result = build_integration_context('TEST','LONG',instant(), fundamental=artifact,
                                           technical=self.record,integration_run_id='run-1')
-        self.assertEqual(result.readiness, 'BLOCKED')
-        self.assertIn('TECHNICAL_RISK_APPLICABILITY_UNRESOLVED', result.blocking_missing_data)
+        self.assertEqual(result.readiness, 'SYNTHESIS_READY')
+        self.assertNotIn('TECHNICAL_RISK_APPLICABILITY_UNRESOLVED', result.blocking_missing_data)
         self.assertEqual(result.technical.source, self.record.signal)
 
     def test_current_artifact_immutable_and_temporally_bound(self):
@@ -807,17 +810,21 @@ class CombinedPipelineTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def exercise(self, horizon='LONG', failure=None, forged=False):
+    def exercise(self, horizon='LONG', failure=None, forged=False, risks=False):
         from contextlib import ExitStack
         from types import SimpleNamespace
         from src import horizon_pipeline as pipeline
         from src import horizon_integration as policy
         native = select_technical_horizon(horizon)
         record, signal, catalog = fixtures.TechnicalSignalPersistenceTests().fixture('BULLISH', native)
-        signal = replace(signal, analysis=replace(signal.analysis, risk_notes=()))
+        if risks:
+            signal = replace(signal, analysis=replace(signal.analysis,
+                conflicting_evidence_ids=signal.analysis.supporting_evidence_ids[:1]))
+        else:
+            signal = replace(signal, analysis=replace(signal.analysis, risk_notes=()))
         before = asdict(signal)
         helper = FreshnessProvenanceTests()
-        artifact = helper._pipeline('MEDIUM' if horizon == 'MEDIUM' else 'LONG')[0]
+        artifact = helper._pipeline('MEDIUM' if horizon == 'MEDIUM' else 'LONG', risks=risks)[0]
         events = []
         def technical(*args, **kwargs):
             events.append('technical')
@@ -844,6 +851,13 @@ class CombinedPipelineTests(unittest.TestCase):
             events.append('synthesis')
             if failure == 'HORIZON_SYNTHESIS': raise ValueError('secret model payload')
             from src.horizon_synthesis import synthesize_horizon
+            if risks:
+                from src.horizon_synthesis import _packet
+                packet = _packet(context)
+                self.assertEqual(context.fundamental.source['major_risks'], artifact.analysis['major_risks'])
+                self.assertEqual(context.fundamental.source['bear_case'], artifact.analysis['bear_case'])
+                self.assertEqual(context.technical.source['analysis']['risk_notes'], json.loads(json.dumps(asdict(signal.analysis)))['risk_notes'])
+                self.assertEqual(context.risk_applicability_version, 'risk-applicability-v1')
             data = HorizonSynthesisTests().output(context)
             with patch('src.openai_client.request_text', return_value=json.dumps(data)) as request:
                 result = synthesize_horizon(context)
@@ -907,3 +921,29 @@ class CombinedPipelineTests(unittest.TestCase):
                 run_horizon_research('TEST','INVALID',fundamental_horizon='LONG',technical_as_of=instant(),market_verified=True)
             self.assertEqual(caught.exception.stage,'INPUT')
             technical.assert_not_called()
+
+    def test_risks_reach_synthesis_for_all_horizons(self):
+        for horizon in DecisionHorizon:
+            with self.subTest(horizon=horizon): self.exercise(horizon, risks=True)
+
+    def test_risks_do_not_override_temporal_or_forged_readiness(self):
+        self.exercise(risks=True, failure='READINESS')
+        self.exercise(risks=True, forged=True)
+
+    def test_unknown_technical_conflicting_id_fails_admission(self):
+        record, _, _ = fixtures.TechnicalSignalPersistenceTests().fixture('BULLISH')
+        original = asdict(record)
+        signal = record.signal
+        signal['analysis']['conflicting_evidence_ids'] = ['T_NONEXISTENT']
+        corrupted = replace(record)
+        object.__setattr__(corrupted, 'signal_json', json.dumps(signal))
+        self.assertEqual(admit_technical(corrupted, 'TEST', instant()).status, Admission.REJECTED)
+        self.assertEqual(asdict(record), original)
+
+    def test_unsupported_risk_version_fails_boundary(self):
+        from src.horizon_integration import require_synthesis_ready, SynthesisReadinessError
+        helper = ReadinessIntegrityTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        with self.assertRaises(SynthesisReadinessError):
+            require_synthesis_ready(replace(helper.context, risk_applicability_version='risk-applicability-v999'))

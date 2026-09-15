@@ -21,6 +21,7 @@ CONTEXT_VERSION = 'horizon-synthesis-context-v1'
 NORMALIZATION_VERSION = 'fundamental-direction-normalization-v1'
 ADMISSION_VERSION = 'horizon-research-admission-v1'
 CONFLICT_VERSION = 'horizon-conflict-foundation-v1'
+RISK_APPLICABILITY_VERSION = 'risk-applicability-v1'
 TECHNICAL_HORIZON_SELECTION_VERSION = 'technical-horizon-selection-v1'
 COMBINED_RESEARCH_SEQUENCING_VERSION = 'combined-research-sequencing-v1'
 
@@ -371,6 +372,7 @@ class IntegrationContext:
     technical_applicability: str = 'UNKNOWN'
     readiness: str = 'BLOCKED'
     integration_policy_version: str = 'horizon-readiness-v1'
+    risk_applicability_version: str = RISK_APPLICABILITY_VERSION
     fundamental_policy_version: str = 'fundamental-provenance-v1'
     calendar_version: str = USMarketCalendar.version
     # Retain immutable originals, including the existing prospective capability.
@@ -481,18 +483,12 @@ def build_integration_context(ticker, decision_horizon, integration_as_of, *,
         warnings.extend(secondary.namespace + ':' + r for r in secondary.reasons)
     if tf.state == Freshness.AGING:
         warnings.append('TECHNICAL_AGING_CAUTION')
-    # Existing validity is not a structured assertion of cross-horizon risk scope.
-    # Keep unresolved material-risk relevance blocked rather than parsing prose.
+    # Valid adverse evidence is input, not an applicability failure by existence.
+    # Independent admission/currentness/evidence and missing-data gates still apply.
     if f.status == Admission.ADMITTED:
         fs = f.source
-        if fs['major_risks'] or fs['bear_case']:
-            blocking.append('FUNDAMENTAL_RISK_APPLICABILITY_UNRESOLVED')
         if not technical_primary and fs['missing_data']:
             blocking.append('PRIMARY_MISSING_DATA_SEVERITY_UNRESOLVED')
-    if t.status == Admission.ADMITTED:
-        ts = t.source['analysis']
-        if ts['risk_notes'] or ts['conflicting_evidence_ids']:
-            blocking.append('TECHNICAL_RISK_APPLICABILITY_UNRESOLVED')
     # Native scope facts resolve different scopes; natural-language risk conflicts
     # remain unclassified. No semantic inference from prose is performed here.
     classification = ConflictAssessment(Conflict.INSUFFICIENT_EVIDENCE, 'POLICY_GATES_BLOCKED')
