@@ -21,6 +21,7 @@ CONTEXT_VERSION = 'horizon-synthesis-context-v1'
 NORMALIZATION_VERSION = 'fundamental-direction-normalization-v1'
 ADMISSION_VERSION = 'horizon-research-admission-v1'
 CONFLICT_VERSION = 'horizon-conflict-foundation-v1'
+TECHNICAL_HORIZON_SELECTION_VERSION = 'technical-horizon-selection-v1'
 
 
 class DecisionHorizon(StrEnum):
@@ -72,6 +73,21 @@ def primary_authority(horizon):
     horizon = DecisionHorizon(horizon)
     return (Authority.TECHNICAL_PRIMARY if horizon in (DecisionHorizon.SHORT, DecisionHorizon.SWING)
             else Authority.FUNDAMENTAL_PRIMARY)
+
+
+def select_technical_horizon(decision_horizon):
+    """Select research to generate; do not change authority, applicability or freshness.
+
+    Returns the V0.7 native horizon string. Future orchestration must retain
+    TECHNICAL_HORIZON_SELECTION_VERSION separately from the decision horizon.
+    """
+    horizon = DecisionHorizon(decision_horizon)
+    return {
+        DecisionHorizon.SHORT: 'SHORT_TERM_1_TO_5_SESSIONS',
+        DecisionHorizon.SWING: 'SWING_1_TO_4_WEEKS',
+        DecisionHorizon.MEDIUM: 'SWING_1_TO_4_WEEKS',
+        DecisionHorizon.LONG: 'SWING_1_TO_4_WEEKS',
+    }[horizon]
 
 
 def normalize_fundamental(recommendation):

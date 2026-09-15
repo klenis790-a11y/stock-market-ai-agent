@@ -267,7 +267,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
 - V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
-- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 4 Horizon Synthesis Agent — backend implemented
+- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 5A Technical horizon selection policy — implemented
 - V0.8B portfolio-aware decision making — future scope
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -326,3 +326,7 @@ readiness label is insufficient. Step 4 now uses this guarded boundary for backe
 See the [Horizon Synthesis Agent](docs/V0_8A_HORIZON_SYNTHESIS_AGENT.md) for strict
 research-only interpretation, evidence validation and limitations. V0.8A remains in
 progress; dashboard integration, persistence and V0.8B are not implemented.
+
+V0.8A [Step 5A Technical horizon selection](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md#step-5a--technical-generation-selection) implements `technical-horizon-selection-v1`.
+It selects native Technical research without changing decision horizons, authority or
+freshness. Step 5 combined end-to-end orchestration is not implemented.

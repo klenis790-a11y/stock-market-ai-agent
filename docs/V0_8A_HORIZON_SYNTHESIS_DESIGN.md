@@ -86,6 +86,42 @@ research can change caution, timing, conflict and interpretation confidence; it
 cannot independently reverse the primary thesis. Verified blocking risks may halt
 synthesis without rewriting either conclusion.
 
+## Step 5A — Technical generation selection
+
+`technical-horizon-selection-v1` is the approved generation-selection policy,
+implemented by `select_technical_horizon(decision_horizon)` in `horizon_integration.py`.
+
+| Explicit decision horizon | Technical native horizon to generate |
+| --- | --- |
+| SHORT | SHORT_TERM_1_TO_5_SESSIONS |
+| SWING | SWING_1_TO_4_WEEKS |
+| MEDIUM | SWING_1_TO_4_WEEKS |
+| LONG | SWING_1_TO_4_WEEKS |
+
+MEDIUM/LONG use the existing 1–4 week research scope to supply current timing/setup
+and context around the Fundamental primary thesis. This is an explicit product
+choice, not a claim that SWING Technical research predicts medium/long outcomes.
+The decision horizon stays MEDIUM/LONG; Technical is never relabeled as that horizon.
+
+Generation selection chooses what to generate. Applicability determines whether
+supplied research can participate and in what role. Authority assigns primary
+responsibility. Freshness assesses the artifact under its own native horizon.
+These remain separate policies: SHORT/SWING stay Technical-primary; MEDIUM/LONG
+stay Fundamental-primary. Existing applicability, conflict classification and
+readiness gates are unchanged, including support for other admissible supplied
+native horizons as context. Selection neither certifies readiness nor adds weights.
+
+`technical-freshness-v1` remains unchanged: short-native ages 0–2 are FRESH, 3–5
+AGING, >5 STALE; swing-native ages 0–10 are FRESH, 11–20 AGING, >20 STALE, counted
+in completed XNYS sessions. MEDIUM/LONG selection uses that same swing-native rule,
+without a longer freshness window or new thresholds.
+
+Unsupported decision horizons fail closed using existing exact DecisionHorizon
+parsing; there is no default or string inference. The exported
+`TECHNICAL_HORIZON_SELECTION_VERSION` lets future orchestration retain the policy
+used alongside both horizons. Any mapping change requires a new version, never
+retroactive reinterpretation. Step 5 combined orchestration is not implemented.
+
 ## Fundamental direction normalization
 
 For conflict analysis only, propose the future identifier

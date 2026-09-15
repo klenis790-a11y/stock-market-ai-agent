@@ -10,7 +10,8 @@ from src.horizon_integration import (
     Admission, Authority, Conflict, DecisionHorizon, Freshness, FundamentalDirection,
     FundamentalArtifact, ScopeRelation, admit_fundamental, admit_technical,
     build_integration_context, classify_conflict, normalize_fundamental,
-    participation, primary_authority,
+    participation, primary_authority, select_technical_horizon,
+    TECHNICAL_HORIZON_SELECTION_VERSION,
 )
 from src.models import DecisionRecord, InterpretationStatement, ForecastStatement, MaterialEvidenceReview
 
@@ -50,6 +51,50 @@ class HorizonIntegrationTests(unittest.TestCase):
         for bad in ('', 'long', 'YEAR', None):
             with self.assertRaises(ValueError):
                 primary_authority(bad)
+
+    def test_generation_selection_mapping_and_version(self):
+        from src.technical_analyst import HORIZONS
+        self.assertEqual(TECHNICAL_HORIZON_SELECTION_VERSION, 'technical-horizon-selection-v1')
+        for horizon, native in [(DecisionHorizon.SHORT, 'SHORT_TERM_1_TO_5_SESSIONS'),
+                                (DecisionHorizon.SWING, 'SWING_1_TO_4_WEEKS'),
+                                (DecisionHorizon.MEDIUM, 'SWING_1_TO_4_WEEKS'),
+                                (DecisionHorizon.LONG, 'SWING_1_TO_4_WEEKS')]:
+            original = horizon.value
+            authority = primary_authority(horizon)
+            before = build_integration_context('TEST', horizon, instant(), technical=self.technical)
+            self.assertEqual(select_technical_horizon(horizon), native)
+            self.assertEqual(select_technical_horizon(original), native)
+            self.assertIn(native, HORIZONS)
+            self.assertNotEqual(native, original)
+            self.assertEqual(horizon.value, original)
+            self.assertEqual(primary_authority(horizon), authority)
+            self.assertEqual(build_integration_context('TEST', horizon, instant(),
+                             technical=self.technical), before)
+            self.assertEqual(before.decision_horizon, horizon)
+
+    def test_generation_selection_invalid_inputs_fail_closed(self):
+        for bad in ('', 'short', ' LONG ', 'YEAR', 'SWING_1_TO_4_WEEKS', None, 20):
+            with self.subTest(value=bad), self.assertRaises(ValueError):
+                select_technical_horizon(bad)
+
+    def test_selected_native_horizon_keeps_existing_freshness(self):
+        from src.horizon_integration import technical_freshness
+        from src.market_calendar import USMarketCalendar
+        original = asdict(self.technical)
+        cal = USMarketCalendar()
+        session = datetime.fromisoformat(self.technical.signal['provenance']['latest_completed_session']).date()
+        for horizon in DecisionHorizon:
+            signal = self.technical.signal
+            signal['horizon'] = select_technical_horizon(horizon)
+            record = replace(self.technical, signal_json=json.dumps(signal))
+            cases = ((2, 'FRESH'), (3, 'AGING'), (5, 'AGING'), (6, 'STALE')) if horizon == DecisionHorizon.SHORT else (
+                (10, 'FRESH'), (11, 'AGING'), (20, 'AGING'), (21, 'STALE'))
+            for age, expected in cases:
+                result = technical_freshness(record, cal.advance_sessions(session, age).closes_at)
+                self.assertEqual(result.state, expected)
+                self.assertEqual(result.policy_version, 'technical-freshness-v1')
+            self.assertEqual(record.signal['horizon'], select_technical_horizon(horizon))
+        self.assertEqual(asdict(self.technical), original)
 
     def test_exact_normalization_and_no_rewrite(self):
         for name, expected in [('Buy', 'FAVORABLE'), ('Accumulate', 'FAVORABLE'),
