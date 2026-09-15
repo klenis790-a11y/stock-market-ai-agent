@@ -446,3 +446,16 @@ Consequently Step 2 builds inspectable, immutable **blocked contexts**, not
 LLM-ready operational views. The next step must approve source applicability,
 freshness and missing-data requirements before enabling synthesis. No schema,
 dashboard, provider, LLM, existing research or evaluation behavior changes here.
+
+
+## Step 3A policy authority
+
+[Freshness & Provenance Policy](V0_8A_FRESHNESS_PROVENANCE_POLICY.md) defines the
+approved `technical-freshness-v1` boundaries and prospective
+`fundamental-provenance-v1` contract. It supersedes earlier deferred Technical
+threshold language in this document. The Step 2 clarification above describes
+existing implementation, not the newly approved prospective behavior.
+Fundamental operational FRESH is limited to trusted same-run/refreshed acquisition,
+not proof of absence of material events. Historical event currentness remains unknown;
+no calendar-age shortcut or legacy version backfill is authorized. Step 3 implementation
+and prospective pipeline/dashboard wiring are not completed by this design update.
