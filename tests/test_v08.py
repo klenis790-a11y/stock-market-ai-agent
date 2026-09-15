@@ -799,3 +799,111 @@ class HorizonSynthesisTests(unittest.TestCase):
             _validate(data,packet)
             data['identity']['conflict_classification']='ALTERED'
             with self.assertRaises(HorizonSynthesisError):_validate(data,packet)
+
+
+class CombinedPipelineTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No live network'))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def exercise(self, horizon='LONG', failure=None, forged=False):
+        from contextlib import ExitStack
+        from types import SimpleNamespace
+        from src import horizon_pipeline as pipeline
+        from src import horizon_integration as policy
+        native = select_technical_horizon(horizon)
+        record, signal, catalog = fixtures.TechnicalSignalPersistenceTests().fixture('BULLISH', native)
+        signal = replace(signal, analysis=replace(signal.analysis, risk_notes=()))
+        before = asdict(signal)
+        helper = FreshnessProvenanceTests()
+        artifact = helper._pipeline('MEDIUM' if horizon == 'MEDIUM' else 'LONG')[0]
+        events = []
+        def technical(*args, **kwargs):
+            events.append('technical')
+            self.assertEqual(args[1], native)
+            if failure == 'TECHNICAL_RESEARCH': raise ValueError('secret provider payload')
+            return SimpleNamespace(signal=signal, catalog=catalog)
+        def fundamental_run(*args, **kwargs):
+            events.append('fundamental')
+            self.assertFalse(kwargs['persist_decision'])
+            self.assertEqual(kwargs['integration_run_id'], 'run-1')
+            if failure == 'FUNDAMENTAL_RESEARCH': raise ValueError('secret provider payload')
+            kwargs['on_fundamental_artifact'](artifact)
+            return artifact.analysis
+        actual_builder = policy.build_integration_context
+        built = []
+        def builder(*args, **kwargs):
+            if failure == 'INTEGRATION': raise ValueError('secret')
+            result = actual_builder(*args, **kwargs)
+            if forged and not built:
+                built.append(result)
+                return replace(result, fundamental=replace(result.fundamental,status=Admission.REJECTED))
+            return result
+        def synthesis(context):
+            events.append('synthesis')
+            if failure == 'HORIZON_SYNTHESIS': raise ValueError('secret model payload')
+            from src.horizon_synthesis import synthesize_horizon
+            data = HorizonSynthesisTests().output(context)
+            with patch('src.openai_client.request_text', return_value=json.dumps(data)) as request:
+                result = synthesize_horizon(context)
+                request.assert_called_once()
+            return result
+        with ExitStack() as stack:
+            stack.enter_context(patch('sqlite3.connect', side_effect=AssertionError('No persistence')))
+            stack.enter_context(patch.object(pipeline, 'uuid4', return_value=SimpleNamespace(hex='run-1')))
+            clock = stack.enter_context(patch.object(pipeline, 'datetime'))
+            clock.now.return_value = (instant() + timedelta(seconds=1) if failure == 'READINESS'
+                                      else instant('2025-03-11T13:00:00+00:00'))
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            t = stack.enter_context(patch.object(pipeline,'run_technical_research',side_effect=technical))
+            f = stack.enter_context(patch.object(pipeline,'run_stock_research',side_effect=fundamental_run))
+            s = stack.enter_context(patch.object(pipeline,'synthesize_horizon',side_effect=synthesis))
+            select = stack.enter_context(patch.object(policy,'select_technical_horizon',wraps=select_technical_horizon))
+            stack.enter_context(patch.object(policy,'build_integration_context',side_effect=builder))
+            require = stack.enter_context(patch.object(policy,'require_synthesis_ready',wraps=policy.require_synthesis_ready))
+            if failure or forged:
+                with self.assertRaises(pipeline.HorizonPipelineError) as caught:
+                    pipeline.run_horizon_research('TEST', horizon, fundamental_horizon='MEDIUM' if horizon == 'MEDIUM' else 'LONG',
+                        technical_as_of=instant('2025-03-11T13:00:00+00:00'), market_verified=True)
+                self.assertEqual(caught.exception.stage, 'READINESS' if forged else failure)
+                self.assertNotIn('secret',str(caught.exception))
+                if forged: self.assertTrue(caught.exception.reasons)
+                if failure != 'HORIZON_SYNTHESIS': s.assert_not_called()
+            else:
+                result = pipeline.run_horizon_research('TEST',horizon,
+                    fundamental_horizon='MEDIUM' if horizon == 'MEDIUM' else 'LONG',
+                    technical_as_of=instant('2025-03-11T13:00:00+00:00'),market_verified=True)
+                self.assertEqual(events, ['technical','fundamental','synthesis'])
+                self.assertEqual(result.view.context.decision_horizon,horizon)
+                self.assertEqual(result.view.context.technical.native_horizon,native)
+                self.assertEqual(result.view.context.integration_as_of,artifact.provenance['available_at'])
+                self.assertEqual(result.view.context.fundamental_source,artifact)
+                self.assertEqual(result.technical_horizon_selection_version,'technical-horizon-selection-v1')
+                self.assertEqual(result.sequencing_version,'combined-research-sequencing-v1')
+                require.assert_called_once()
+                s.assert_called_once()
+            select.assert_called_once()
+            t.assert_called_once()
+            if failure == 'TECHNICAL_RESEARCH': f.assert_not_called()
+            else: f.assert_called_once()
+        self.assertEqual(asdict(signal),before)
+
+    def test_all_horizons_success_and_source_preservation(self):
+        for horizon in DecisionHorizon:
+            with self.subTest(horizon=horizon): self.exercise(horizon)
+
+    def test_fail_fast_stages_no_retries_or_leaks(self):
+        for stage in ('TECHNICAL_RESEARCH','FUNDAMENTAL_RESEARCH','INTEGRATION','READINESS','HORIZON_SYNTHESIS'):
+            with self.subTest(stage=stage): self.exercise(failure=stage)
+
+    def test_forged_context_rejected_before_synthesis(self):
+        self.exercise(forged=True)
+
+    def test_bad_input_makes_no_research_calls(self):
+        from src.horizon_pipeline import run_horizon_research, HorizonPipelineError
+        with patch('src.horizon_pipeline.run_technical_research') as technical:
+            with self.assertRaises(HorizonPipelineError) as caught:
+                run_horizon_research('TEST','INVALID',fundamental_horizon='LONG',technical_as_of=instant(),market_verified=True)
+            self.assertEqual(caught.exception.stage,'INPUT')
+            technical.assert_not_called()
