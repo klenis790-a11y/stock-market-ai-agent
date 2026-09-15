@@ -282,3 +282,20 @@ No agent exists yet. A future agent must check readiness, use the exact immutabl
 context and preserve all warnings. Broader handling of unstructured risk relevance,
 primary missing-data severity and safe omission of secondary research requires a
 separate explicit policy decision. No dashboard or evaluation behavior changed.
+
+## Step 3C — retained qualification and validation
+
+IntegrationContext now retains the exact current Fundamental sidecar, Technical
+record and run identity used by its builder. These inputs are immutable; Fundamental
+capability verification and exact completion/run matching are rerun at the consumer
+boundary by `require_synthesis_ready`. The validator recomputes all Step 3B results
+and rejects caller-replaced readiness, cleared blockers, altered admissions, unsupported
+versions, stale sources, mismatched timestamps, authority or conflict metadata.
+
+No new signatures, secrets, hashes or trust booleans are introduced. The existing
+Fundamental sidecar capability is retained unchanged, while readiness itself is checked
+through deterministic recomputation. This is an in-process contract, not remote
+identity authentication or protection against hostile code modifying Python internals.
+The retained process-bound sidecar is not a portable serialized credential. Persistence
+and cross-process transport remain out of scope. Valid non-blocking feature gaps stay
+non-blocking, and unresolved Step 3B risk policies remain unresolved.

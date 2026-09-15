@@ -267,7 +267,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
 - V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
-- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 3B deterministic freshness, provenance and readiness
+- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 3C trusted integration context and readiness integrity
 - V0.8B portfolio-aware decision making — future scope
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -318,3 +318,7 @@ Technical session-age boundaries and prospective Fundamental provenance/currentn
 Step 3B implements the approved policy with explicit SYNTHESIS_READY/BLOCKED contexts.
 Legacy provenance and unresolved risk/applicability remain blocked; dashboard wiring
 and the Horizon Synthesis Agent are not implemented.
+
+Step 3C adds `require_synthesis_ready`: downstream consumers must recompute and
+validate policy results from retained sources before any synthesis call. A caller-set
+readiness label is insufficient. The Horizon Synthesis Agent remains unimplemented.

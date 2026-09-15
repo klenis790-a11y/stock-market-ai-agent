@@ -439,3 +439,104 @@ class FreshnessProvenanceTests(unittest.TestCase):
         single.assert_not_called()
         self.assertEqual(captured[0].verified()['specialists'],['fundamental','risk'])
         self.assertEqual(captured[0].provenance['methodology_version'],'fundamental-multi-agent-path-v1')
+
+
+class ReadinessIntegrityTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No live network'))
+        guard.start()
+        self.addCleanup(guard.stop)
+        helper = FreshnessProvenanceTests()
+        helper.record, _, _ = fixtures.TechnicalSignalPersistenceTests().fixture('BULLISH')
+        self.artifact = helper._pipeline()[0]
+        signal = helper.record.signal
+        signal['analysis']['risk_notes'] = []
+        self.record = replace(helper.record, signal_json=json.dumps(signal))
+        self.context = build_integration_context('TEST','LONG',instant(),fundamental=self.artifact,
+                                                technical=self.record,integration_run_id='run-1')
+
+    def require(self, context):
+        from src.horizon_integration import require_synthesis_ready
+        return require_synthesis_ready(context)
+
+    def test_reported_replace_bypass_permanent_regression(self):
+        from src.horizon_integration import SynthesisReadinessError
+        blocked = build_integration_context('TEST','LONG',instant())
+        forged = replace(blocked, readiness='SYNTHESIS_READY', blocking_missing_data=())
+        with self.assertRaises(SynthesisReadinessError):
+            self.require(forged)
+        with self.assertRaises(SynthesisReadinessError) as caught:
+            self.require(blocked)
+        self.assertTrue(set(blocked.blocking_missing_data) <= set(caught.exception.reasons))
+
+    def test_legitimate_ready_recomputes_and_preserves_sources(self):
+        self.assertEqual(self.require(self.context), self.context)
+        self.assertEqual(self.require(self.context), self.require(self.context))
+        self.assertIs(self.context.fundamental_source, self.artifact)
+        self.assertEqual(self.context.technical_source, self.record)
+        self.assertEqual(self.context.integration_run_id, 'run-1')
+        self.assertTrue(self.context.non_blocking_missing_data)
+        self.assertEqual(self.context.fundamental.source, self.artifact.analysis)
+        self.assertEqual(self.context.technical.source, self.record.signal)
+
+    def test_direct_constructor_inconsistent_state_rejected(self):
+        from dataclasses import fields
+        from src.horizon_integration import IntegrationContext, SynthesisReadinessError
+        data = {f.name:getattr(self.context,f.name) for f in fields(self.context)}
+        data['technical_freshness'] = Freshness.STALE
+        with self.assertRaises(SynthesisReadinessError):
+            self.require(IntegrationContext(**data))
+
+    def test_derived_fields_cannot_override_policy(self):
+        from src.horizon_integration import SynthesisReadinessError, ConflictAssessment
+        changes = [dict(readiness='BLOCKED'),dict(blocking_missing_data=('invented-block',)),
+                   dict(fundamental=replace(self.context.fundamental,status=Admission.REJECTED)),
+                   dict(technical_freshness=Freshness.STALE),dict(fundamental_freshness=Freshness.UNKNOWN),
+                   dict(primary_authority=Authority.TECHNICAL_PRIMARY),dict(decision_horizon='SHORT'),
+                   dict(conflict=ConflictAssessment(Conflict.THESIS_CONFLICT,'invented')),
+                   dict(non_blocking_missing_data=()),dict(warnings=()),dict(technical_session_age=999)]
+        for change in changes:
+            with self.subTest(change=tuple(change)):
+                with self.assertRaises(SynthesisReadinessError):
+                    self.require(replace(self.context,**change))
+
+    def test_versions_fail_closed(self):
+        from src.horizon_integration import SynthesisReadinessError
+        for name in ('methodology_version','admission_version','normalization_version',
+                     'freshness_policy_version','integration_policy_version','fundamental_policy_version',
+                     'calendar_version'):
+            with self.subTest(name=name), self.assertRaises(SynthesisReadinessError):
+                self.require(replace(self.context,**{name:'unsupported'}))
+
+    def test_run_completion_ticker_and_provenance_binding(self):
+        from src.horizon_integration import SynthesisReadinessError
+        p = self.artifact.provenance
+        p['run_id'] = 'altered'
+        bad = replace(self.artifact,provenance_json=json.dumps(p))
+        for change in (dict(integration_run_id='other'),dict(integration_run_id=None),
+                       dict(integration_as_of='2025-03-12T15:00:01+00:00'),
+                       dict(integration_as_of='2025-03-01T15:00:00+00:00'),dict(ticker='AAPL'),
+                       dict(fundamental_source=bad),dict(fundamental_source=None)):
+            with self.subTest(change=tuple(change)), self.assertRaises(SynthesisReadinessError):
+                self.require(replace(self.context,**change))
+
+    def test_stale_primary_forgery_recomputed(self):
+        from src.horizon_integration import SynthesisReadinessError
+        context = build_integration_context('TEST','SHORT',instant('2025-04-01T15:00:00+00:00'),
+                    fundamental=self.artifact,technical=self.record,integration_run_id='run-1')
+        forged = replace(context,readiness='SYNTHESIS_READY',blocking_missing_data=(),
+                         technical_freshness=Freshness.FRESH)
+        with self.assertRaises(SynthesisReadinessError) as caught:
+            self.require(forged)
+        self.assertIn('PRIMARY_RESEARCH_STALE',caught.exception.reasons)
+
+    def test_legacy_no_capability_and_no_external_side_effects(self):
+        from src.horizon_integration import SynthesisReadinessError
+        legacy = build_integration_context('TEST','LONG',instant(),fundamental=fundamental(),technical=self.record)
+        self.assertIsNone(legacy.fundamental_source)
+        with self.assertRaises(SynthesisReadinessError):
+            self.require(replace(legacy,readiness='SYNTHESIS_READY',blocking_missing_data=()))
+        with patch('src.openai_client.request_text',side_effect=AssertionError('No AI')), \
+             patch('src.research_pipeline.run_stock_research',side_effect=AssertionError('No research')), \
+             patch('sqlite3.connect',side_effect=AssertionError('No DB')):
+            self.assertEqual(self.require(self.context),self.context)

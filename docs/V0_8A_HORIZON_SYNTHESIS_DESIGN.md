@@ -468,3 +468,27 @@ It supersedes Step 2's universal UNKNOWN placeholder behavior. Legacy Fundamenta
 freshness stays UNKNOWN; supported same-run provenance can qualify operationally.
 No Horizon Synthesis Agent or AI output fields are implemented. Unresolved risk,
 native applicability and missing-data dependencies remain explicit blockers.
+
+## Step 3C — readiness integrity boundary
+
+Readiness is derived metadata, not caller authority. Frozen dataclasses can still
+be constructed or replaced. Every future synthesis consumer must call
+`require_synthesis_ready(context)` immediately before OpenAI and use its returned,
+recomputed context. Checking a readiness string alone is prohibited.
+
+The normal builder retains the immutable current Fundamental sidecar (including its
+existing process-bound provenance capability), immutable TechnicalSignalRecord and
+integration run ID. The boundary validator reruns the same builder with these sources,
+the selected horizon and explicit assessment timestamp, using the real supported
+calendar rather than a caller-injected calendar. It compares the complete derived
+context, including versions, admissions, freshness, authority, applicability, conflict,
+missing data and warnings. Any mismatch or recomputed blocker raises
+SynthesisReadinessError with deterministic reasons. Original blocker reasons are
+retained alongside recomputed reasons. No fallback or regeneration occurs.
+
+The validator returns a newly recomputed context for valid ready inputs. No identity
+flag or hash is accepted as proof of readiness. Existing Fundamental provenance
+verification remains a prerequisite, not a substitute for policy recomputation.
+Legacy mutable envelopes are not retained as trusted sources; their detached historical
+metadata remains visible, and they cannot qualify current synthesis. No historical
+records or Step 3B readiness policies change.

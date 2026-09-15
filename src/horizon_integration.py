@@ -4,7 +4,7 @@ Provenance attestations are caller-owned facts, not proof inferred from text. Th
 context applies versioned policies and blocks unresolved applicability/risk facts.
 Lower-level policy functions are independently testable.
 """
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, replace, field
 from datetime import date, datetime
 from enum import StrEnum
 import json
@@ -349,6 +349,11 @@ class IntegrationContext:
     integration_policy_version: str = 'horizon-readiness-v1'
     fundamental_policy_version: str = 'fundamental-provenance-v1'
     calendar_version: str = USMarketCalendar.version
+    # Retain immutable originals, including the existing prospective capability.
+    # These are policy inputs, never a replacement for recomputation.
+    fundamental_source: object = field(default=None, repr=False)
+    technical_source: TechnicalSignalRecord | None = field(default=None, repr=False)
+    integration_run_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -478,4 +483,56 @@ def build_integration_context(ticker, decision_horizon, integration_as_of, *,
         tuple(nonblocking), tuple(warnings), technical_session_age=tf.completed_session_age,
         fundamental_provenance_status='CURRENT_SYSTEM_TRUSTED' if provenance else 'LEGACY_UNKNOWN',
         fundamental_applicability=f_role, technical_applicability=t_role,
-        readiness='BLOCKED' if blocking else 'SYNTHESIS_READY')
+        readiness='BLOCKED' if blocking else 'SYNTHESIS_READY',
+        fundamental_source=_retained_fundamental(fundamental),
+        technical_source=technical if isinstance(technical, TechnicalSignalRecord) else None,
+        integration_run_id=integration_run_id)
+
+
+def _retained_fundamental(source):
+    from src.fundamental_provenance import CurrentFundamentalArtifact
+    # Legacy envelopes contain mutable DecisionRecord data. Their detached snapshot
+    # remains in admission metadata, but cannot qualify current readiness.
+    return source if isinstance(source, CurrentFundamentalArtifact) else None
+
+
+class SynthesisReadinessError(ValueError):
+    """Safe deterministic reasons, not source prose or provider payloads."""
+    def __init__(self, reasons):
+        self.reasons = tuple(dict.fromkeys(reasons))
+        super().__init__('Integration context is not trusted synthesis-ready: ' + ', '.join(self.reasons))
+
+
+def require_synthesis_ready(context):
+    """Recompute current policy from retained immutable sources before downstream use.
+
+    Frozen/ready flags are not credentials. No caller-supplied calendar is accepted
+    at this boundary. Return the recomputed context, not the caller's assertions.
+    The existing Fundamental origin capability is revalidated by the normal builder.
+    """
+    if not isinstance(context, IntegrationContext):
+        raise SynthesisReadinessError(('INVALID_CONTEXT_TYPE',))
+    original_reasons = context.blocking_missing_data
+    if not isinstance(original_reasons, tuple) or any(not isinstance(r, str) for r in original_reasons):
+        raise SynthesisReadinessError(('INVALID_BLOCKING_REASONS',))
+    try:
+        from src.fundamental_provenance import CurrentFundamentalArtifact
+        if (not isinstance(context.fundamental_source, CurrentFundamentalArtifact) or
+                not isinstance(context.technical_source, TechnicalSignalRecord)):
+            raise SynthesisReadinessError((*original_reasons, 'REQUIRED_POLICY_SOURCES_UNAVAILABLE'))
+        derived = build_integration_context(context.ticker, context.decision_horizon,
+            datetime.fromisoformat(utc_timestamp(context.integration_as_of).replace('Z', '+00:00')),
+            fundamental=context.fundamental_source, technical=context.technical_source,
+            integration_run_id=context.integration_run_id)
+    except SynthesisReadinessError:
+        raise
+    except (ValueError, TypeError, KeyError, AttributeError):
+        raise SynthesisReadinessError((*original_reasons, 'INVALID_POLICY_INPUTS')) from None
+    reasons = list(derived.blocking_missing_data)
+    if derived != context:
+        reasons.append('CONTEXT_DIFFERS_FROM_POLICY_RECOMPUTATION')
+    if derived.readiness != 'SYNTHESIS_READY' or derived.blocking_missing_data:
+        reasons.append('POLICY_CONTEXT_BLOCKED')
+    if reasons:
+        raise SynthesisReadinessError((*original_reasons, *reasons))
+    return derived
