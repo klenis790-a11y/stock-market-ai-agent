@@ -22,6 +22,14 @@ NORMALIZATION_VERSION = 'fundamental-direction-normalization-v1'
 ADMISSION_VERSION = 'horizon-research-admission-v1'
 CONFLICT_VERSION = 'horizon-conflict-foundation-v1'
 TECHNICAL_HORIZON_SELECTION_VERSION = 'technical-horizon-selection-v1'
+COMBINED_RESEARCH_SEQUENCING_VERSION = 'combined-research-sequencing-v1'
+
+
+class ResearchSequence(StrEnum):
+    TECHNICAL_THEN_FUNDAMENTAL = 'TECHNICAL_THEN_FUNDAMENTAL'
+
+
+COMBINED_RESEARCH_SEQUENCE = ResearchSequence.TECHNICAL_THEN_FUNDAMENTAL
 
 
 class DecisionHorizon(StrEnum):

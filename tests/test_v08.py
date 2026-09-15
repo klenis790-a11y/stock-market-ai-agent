@@ -77,6 +77,20 @@ class HorizonIntegrationTests(unittest.TestCase):
             with self.subTest(value=bad), self.assertRaises(ValueError):
                 select_technical_horizon(bad)
 
+    def test_combined_sequence_policy_and_independent_authority(self):
+        from src.horizon_integration import (ResearchSequence, COMBINED_RESEARCH_SEQUENCE,
+                                            COMBINED_RESEARCH_SEQUENCING_VERSION)
+        self.assertEqual(COMBINED_RESEARCH_SEQUENCING_VERSION, 'combined-research-sequencing-v1')
+        self.assertEqual(COMBINED_RESEARCH_SEQUENCE, 'TECHNICAL_THEN_FUNDAMENTAL')
+        self.assertEqual(ResearchSequence(COMBINED_RESEARCH_SEQUENCE), COMBINED_RESEARCH_SEQUENCE)
+        for bad in ('FUNDAMENTAL_THEN_TECHNICAL', '', None):
+            with self.assertRaises(ValueError):
+                ResearchSequence(bad)
+        for horizon, expected in [('SHORT', 'TECHNICAL_PRIMARY'), ('SWING', 'TECHNICAL_PRIMARY'),
+                                  ('MEDIUM', 'FUNDAMENTAL_PRIMARY'), ('LONG', 'FUNDAMENTAL_PRIMARY')]:
+            self.assertEqual(primary_authority(horizon), expected)
+        self.assertEqual(TECHNICAL_HORIZON_SELECTION_VERSION, 'technical-horizon-selection-v1')
+
     def test_selected_native_horizon_keeps_existing_freshness(self):
         from src.horizon_integration import technical_freshness
         from src.market_calendar import USMarketCalendar
@@ -513,6 +527,38 @@ class ReadinessIntegrityTests(unittest.TestCase):
         with self.assertRaises(SynthesisReadinessError) as caught:
             self.require(blocked)
         self.assertTrue(set(blocked.blocking_missing_data) <= set(caught.exception.reasons))
+
+    def test_technical_first_sequence_satisfies_existing_time_contract(self):
+        original = (self.artifact.provenance_json, asdict(self.record))
+        p = self.artifact.verified()
+        retrieved = instant(self.record.signal['provenance']['retrieved_at'].replace('Z', '+00:00'))
+        created = instant(self.record.created_at.replace('Z', '+00:00'))
+        available = instant(p['available_at'].replace('Z', '+00:00'))
+        self.assertLessEqual(retrieved, created)
+        self.assertLessEqual(created, instant(p['retrieval_started_at'].replace('Z', '+00:00')))
+        self.assertLessEqual(created, available)
+        self.assertEqual(self.context.integration_as_of, p['available_at'])
+        self.assertEqual(self.require(self.context), self.context)
+        self.assertEqual(self.context.fundamental_freshness, Freshness.FRESH)
+        self.assertEqual((self.artifact.provenance_json, asdict(self.record)), original)
+
+    def test_reverse_sequence_cannot_repair_time_by_advancing_integration(self):
+        from src.horizon_integration import SynthesisReadinessError
+        # A separate fixture represents actual later Technical completion. Neither
+        # assessment below retimestamps it or the Fundamental sidecar.
+        late = replace(self.record, created_at=(instant() + timedelta(seconds=1)).isoformat())
+        original = (self.artifact.provenance_json, asdict(late))
+        for at in (instant(), instant() + timedelta(seconds=1)):
+            context = build_integration_context('TEST', 'LONG', at,
+                fundamental=self.artifact, technical=late, integration_run_id='run-1')
+            with self.assertRaises(SynthesisReadinessError):
+                self.require(context)
+            if at == instant():
+                self.assertIn('INVALID_TEMPORAL_ORDER', context.technical.reasons)
+            else:
+                self.assertEqual(context.fundamental_freshness, Freshness.UNKNOWN)
+                self.assertIn('PRIMARY_RESEARCH_UNKNOWN', context.blocking_missing_data)
+        self.assertEqual((self.artifact.provenance_json, asdict(late)), original)
 
     def test_legitimate_ready_recomputes_and_preserves_sources(self):
         self.assertEqual(self.require(self.context), self.context)

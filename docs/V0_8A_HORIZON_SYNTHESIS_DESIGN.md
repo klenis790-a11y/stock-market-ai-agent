@@ -537,3 +537,36 @@ Step 4 explicitly allows UNRESOLVED for residual interpretation ambiguity in rea
 contexts, in addition to each matrix row's ranges. It never admits blocked contexts.
 All original conclusions/conditions/provenance remain in the validated source context.
 No existing readiness policy or portfolio boundary is weakened.
+
+## Step 5B — Combined research sequencing
+
+`combined-research-sequencing-v1` selects `TECHNICAL_THEN_FUNDAMENTAL` for new
+combined runs. Machine-readable exports in `horizon_integration.py` are
+`COMBINED_RESEARCH_SEQUENCING_VERSION`, `COMBINED_RESEARCH_SEQUENCE` and the
+`ResearchSequence` enum (unsupported sequence values fail closed). These declarations
+do not execute research or accept alternate policy versions.
+
+The future orchestrator accepts an explicit decision horizon, calls the existing
+`select_technical_horizon`, completes Technical research with its real timestamps,
+then completes Fundamental research and captures its trusted prospective sidecar.
+It uses `integration_as_of = fundamental.available_at`, builds the context, and calls
+`require_synthesis_ready` before Horizon Synthesis. Preserve the sequencing and
+selection versions independently in eventual combined-run provenance.
+
+Execution order is not analytical authority: SHORT/SWING remain Technical-primary;
+MEDIUM/LONG remain Fundamental-primary. Selection, applicability and conflict policy
+are unchanged. Technical freshness is evaluated under its native horizon at integration
+time. AGING, STALE or UNKNOWN are handled by existing gates, never by an automatic
+refresh loop. A blocked run is a valid outcome.
+
+Technical failure stops before Fundamental. Fundamental failure stops before
+integration/synthesis. Integration/readiness failure stops before synthesis; synthesis
+failure never regenerates either input. No automatic retry or fallback is approved.
+No source timestamps are backdated, synchronized or overwritten. Run identity is
+separate from timestamps; this step does not redesign identity or grant a new
+Fundamental time-validity window. Future ordering/currentness changes require a new
+policy version, not reinterpretation of historical results.
+
+This step implements policy representation only. Step 5 combined orchestration is
+not implemented. Existing provenance, material-event coverage limitations and all
+readiness gates remain in force; ordering alone does not guarantee readiness.

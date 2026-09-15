@@ -299,3 +299,20 @@ identity authentication or protection against hostile code modifying Python inte
 The retained process-bound sidecar is not a portable serialized credential. Persistence
 and cross-process transport remain out of scope. Valid non-blocking feature gaps stay
 non-blocking, and unresolved Step 3B risk policies remain unresolved.
+
+## Step 5B — Temporal sequencing compatibility
+
+[combined-research-sequencing-v1](V0_8A_HORIZON_SYNTHESIS_DESIGN.md#step-5b--combined-research-sequencing)
+requires Technical completion before Fundamental research for new combined runs.
+The real Technical retrieved_at and record.created_at can therefore precede
+`integration_as_of`, which remains exactly Fundamental `available_at`. Native as_of
+and latest completed session are preserved. Reverse ordering with later Technical
+completion fails admission at that integration time; advancing integration time
+instead makes Fundamental currentness UNKNOWN. No timestamp repair is permitted.
+
+The sequence changes neither authority nor freshness. Technical is assessed normally
+using `technical-freshness-v1` at Fundamental completion, without automatic refresh
+if it ages or becomes unusable. Fundamental still requires matching run identity and
+exact completion time, with no minutes/hours/days grace window or claim of continuous
+material-event coverage. Future sequencing/currentness changes require a new version.
+This is policy representation only, not combined orchestration implementation.
