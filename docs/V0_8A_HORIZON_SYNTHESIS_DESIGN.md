@@ -392,3 +392,57 @@ and deterministic policy scaffolding after review, but operational synthesis mus
 wait for explicit freshness thresholds, horizon applicability/material-risk rules,
 source provenance admission and ambiguity handling to be approved and tested. These
 are deliberate policy dependencies, not permission to invent defaults during coding.
+
+## Step 2 implementation clarification
+
+`src/horizon_integration.py` implements `horizon-synthesis-context-v1`,
+`fundamental-direction-normalization-v1`, `horizon-research-admission-v1` and
+`horizon-conflict-foundation-v1`. It does not implement the synthesis agent or the
+full matrix posture contract. Decision horizons and authority are enums; original
+repository title-case Fundamental recommendations remain exact.
+
+Admission and participation are separate. A structurally admitted artifact can
+still be unusable due to STALE or UNKNOWN freshness. The pure participation helper
+represents all four states; it does not certify externally asserted freshness.
+The assembled context always uses UNKNOWN with no freshness policy version: no
+threshold policy exists. There is deliberately no caller override that can mark a
+context FRESH. Authority records the declared responsibility, while
+`usable_primary_authority` is unavailable until policy gates can be satisfied.
+
+The Fundamental source envelope requires a DecisionRecord, its original evidence
+package and original catalog, explicit research-as-of/availability, and references
+to caller verification of timing and portfolio-independent origin. These references
+are trusted caller attestations, not independent authentication. No current dashboard
+adapter supplies them automatically. Bare legacy records do not pass admission;
+save timestamps alone are insufficient. Native horizons are preserved as original
+text, not guessed or reclassified. Fundamental methodology is explicitly unknown
+where the legacy contract has no identifier. The admission version identifies the
+adapter checks, not a retroactive research methodology.
+
+The Technical adapter accepts TechnicalSignalRecord, reuses its historical structural
+validation, checks supported source versions and verifies calendar/timestamp consistency
+without rerunning features, evidence or analysis. Transient signals must first have a
+trustworthy availability envelope; no automatic save is introduced. Both source packets
+are copied as immutable JSON, with detached accessors. Fundamental E IDs and Technical
+T IDs remain in separate named source packets. Original conditions, references, missing
+data and provenance are retained, including classification paths in fundamental evidence.
+
+Conditional conflict helpers implement the Step 1 precedence on explicit validated
+scope facts. They cannot infer scope/materiality from prose. Operational contexts use
+INSUFFICIENT_EVIDENCE until freshness, applicability and missing-data severity policies
+exist. The helpers' `evidence_ready`/scope arguments are policy-test inputs, not an
+admission bypass in the builder. Same-scope opposition, distinct-scope divergence and
+timing conflict are independently testable without producing recommendations.
+
+Missing primary research is explicitly blocking. Missing secondary research is
+reported without asserting it is safe to omit: the required-cross-check policy remains
+unresolved and blocks authorization. Missing features in admitted secondary Technical
+research are recorded as non-blocking feature absences for a Fundamental-primary
+horizon; that does not waive the separate missing-data/risk-policy gate. Primary
+Technical missing features retain unresolved-severity warnings. Core Fundamental
+missing-data prose is never heuristically classified by keyword or feature count.
+
+Consequently Step 2 builds inspectable, immutable **blocked contexts**, not
+LLM-ready operational views. The next step must approve source applicability,
+freshness and missing-data requirements before enabling synthesis. No schema,
+dashboard, provider, LLM, existing research or evaluation behavior changes here.

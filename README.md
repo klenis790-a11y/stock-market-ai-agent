@@ -267,7 +267,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
 - V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
-- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 1 design only
+- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 2 deterministic policy/context foundation
 - V0.8B portfolio-aware decision making — future scope
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -309,5 +309,6 @@ validation passed. This confirms execution only. No predictive-skill
 or profitable-strategy claim is made.
 
 V0.8A begins with the [Horizon Synthesis contract and decision matrix](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md).
-This is a design-only milestone: independent research, horizon authority, provenance
-and deterministic integration guardrails. No V0.8 production behavior is implemented.
+Step 2 adds offline admission, horizon authority and immutable integration contexts.
+Freshness remains UNKNOWN until an approved policy exists; contexts cannot yet authorize
+synthesis. No Horizon Synthesis Agent, dashboard integration or portfolio action is implemented.
