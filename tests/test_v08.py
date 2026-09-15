@@ -540,3 +540,171 @@ class ReadinessIntegrityTests(unittest.TestCase):
              patch('src.research_pipeline.run_stock_research',side_effect=AssertionError('No research')), \
              patch('sqlite3.connect',side_effect=AssertionError('No DB')):
             self.assertEqual(self.require(self.context),self.context)
+
+
+class HorizonSynthesisTests(unittest.TestCase):
+    def setUp(self):
+        helper = ReadinessIntegrityTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        self.context = helper.context
+
+    def output(self, context=None, posture='FAVORABLE_NOW'):
+        from src.horizon_synthesis import _packet
+        p = _packet(context or self.context)
+        fid = p['fundamental']['catalog'][0]['evidence_id']
+        tid = p['technical']['analysis']['supporting_evidence_ids'][0]
+        statement = lambda text: dict(text=text,classification='AI_INTERPRETATION',
+            fundamental_evidence_ids=[fid],technical_evidence_ids=[tid],condition_ids=[])
+        data = dict(identity=p['identity'],timing_posture=posture,synthesis_confidence=67,
+            synthesis_summary=statement('The supplied thesis and timing evidence inform different research horizons.'),
+            agreement_explanation=statement('The independent research conclusions remain preserved.'),
+            horizon_interpretation=statement('Primary authority governs the selected horizon.'),
+            invalidation_summary=statement('The supplied invalidation condition remains conditional.'),
+            major_integrated_risks=[],supporting_fundamental_evidence_ids=[fid],conflicting_fundamental_evidence_ids=[],
+            supporting_technical_evidence_ids=[tid],conflicting_technical_evidence_ids=[],
+            acknowledged_limitations=p['limitations'])
+        data['invalidation_summary']['classification']='FORECAST'
+        data['invalidation_summary']['condition_ids']=['F_INVALIDATION:0']
+        if posture == 'WAIT_FOR_CONFIRMATION':
+            data['synthesis_summary']['classification']='FORECAST'
+            data['synthesis_summary']['condition_ids']=['T_CONFIRMATION:0']
+        return data
+
+    def invoke(self, data, context=None):
+        from src.horizon_synthesis import synthesize_horizon
+        with patch('src.openai_client.request_text',return_value=json.dumps(data)) as request:
+            result = synthesize_horizon(context or self.context)
+            request.assert_called_once()
+            self.assertTrue(request.call_args.kwargs['require_completed'])
+            self.assertTrue(request.call_args.kwargs['text']['format']['strict'])
+            self.assertNotIn('portfolio_assessment',request.call_args.kwargs['input'])
+        return result
+
+    def test_valid_output_retains_original_context_and_confidence(self):
+        result=self.invoke(self.output())
+        self.assertEqual(result.context,self.context)
+        self.assertEqual(result.analysis['synthesis_confidence'],67)
+        self.assertEqual(result.context.fundamental.confidence,72.5)
+        self.assertEqual(result.context.technical.source,self.context.technical.source)
+        self.assertTrue(result.synthesized_at.endswith('Z'))
+        self.assertEqual(result.methodology_version,'horizon-synthesis-v1')
+
+    def test_blocked_and_forged_zero_calls(self):
+        from src.horizon_synthesis import synthesize_horizon
+        from src.horizon_integration import SynthesisReadinessError
+        blocked=build_integration_context('TEST','LONG',instant())
+        with patch('src.openai_client.request_text') as request:
+            for context in (blocked,replace(blocked,readiness='SYNTHESIS_READY',blocking_missing_data=())):
+                with self.assertRaises(SynthesisReadinessError): synthesize_horizon(context)
+            request.assert_not_called()
+
+    def test_identity_changes_rejected(self):
+        from src.horizon_synthesis import HorizonSynthesisError
+        for key in self.output()['identity']:
+            data=self.output(); data['identity'][key]='CHANGED'
+            with self.subTest(key=key),self.assertRaises(HorizonSynthesisError) as caught:
+                self.invoke(data)
+            self.assertEqual(caught.exception.synthesis_failure_type,'IDENTITY_MISMATCH')
+
+    def test_postures_and_matrix_guardrail(self):
+        from src.horizon_synthesis import _validate,_packet,HorizonSynthesisError
+        for posture in ('FAVORABLE_NOW','WAIT_FOR_CONFIRMATION','UNRESOLVED'):
+            self.invoke(self.output(posture=posture))
+        # Parser units use approved matrix variations; forged contexts are never sent to IO.
+        for direction, signal, posture in [('NEUTRAL','NEUTRAL','NO_ACTION'),('UNFAVORABLE','BEARISH','UNFAVORABLE_NOW')]:
+            context=replace(self.context,fundamental=replace(self.context.fundamental,direction=FundamentalDirection(direction)),
+                            technical=replace(self.context.technical,recommendation=signal))
+            _validate(self.output(context,posture),_packet(context))
+        for posture in ('BUY','SELL','ENTER','HOLD_POSITION','NO_ACTION'):
+            with self.subTest(posture=posture),self.assertRaises(HorizonSynthesisError):
+                self.invoke(self.output(posture=posture))
+
+    def test_schema_confidence_and_fake_evidence(self):
+        from src.horizon_synthesis import HorizonSynthesisError
+        for value in (-1,101,True,'70',None):
+            data=self.output();data['synthesis_confidence']=value
+            with self.assertRaises(HorizonSynthesisError):self.invoke(data)
+        for field in ('supporting_fundamental_evidence_ids','supporting_technical_evidence_ids'):
+            data=self.output();data[field]=['FAKE999']
+            with self.assertRaises(HorizonSynthesisError) as caught:self.invoke(data)
+            self.assertEqual(caught.exception.synthesis_failure_type,'INVALID_EVIDENCE_REFERENCE')
+        for change in ('missing','extra'):
+            data=self.output()
+            if change=='missing':del data['synthesis_summary']
+            else:data['position_size']=1
+            with self.assertRaises(HorizonSynthesisError):self.invoke(data)
+
+    def test_conditions_numbers_limitations_and_forecasts(self):
+        from src.horizon_synthesis import HorizonSynthesisError
+        mutations=[('invalidation_summary','text','Stop-loss at 100.'),
+                   ('invalidation_summary','condition_ids',['F_INVALIDATION:999']),
+                   ('invalidation_summary','classification','RETRIEVED_FACT'),
+                   ('synthesis_summary','text','The price will rise.'),
+                   ('synthesis_summary','technical_evidence_ids',['E001'])]
+        for field,key,value in mutations:
+            data=self.output();data[field][key]=value
+            with self.subTest(field=field,key=key),self.assertRaises(HorizonSynthesisError):self.invoke(data)
+        data=self.output();data['acknowledged_limitations']=[]
+        with self.assertRaises(HorizonSynthesisError):self.invoke(data)
+        data=self.output(posture='WAIT_FOR_CONFIRMATION');data['synthesis_summary']['condition_ids']=[]
+        with self.assertRaises(HorizonSynthesisError):self.invoke(data)
+
+    def test_json_extraction_and_api_failures_no_retry(self):
+        from src.horizon_synthesis import synthesize_horizon,HorizonSynthesisError
+        for response,kind in [('{broken','INVALID_JSON'),('```json\n{}\n```','INVALID_JSON'),('', 'RESPONSE_EXTRACTION'),(None,'RESPONSE_EXTRACTION')]:
+            with patch('src.openai_client.request_text',return_value=response) as request:
+                with self.assertRaises(HorizonSynthesisError) as caught:synthesize_horizon(self.context)
+                self.assertEqual(caught.exception.synthesis_failure_type,kind)
+                request.assert_called_once()
+        with patch('src.openai_client.request_text',side_effect=RuntimeError('secret provider detail')) as request:
+            with self.assertRaises(HorizonSynthesisError) as caught:synthesize_horizon(self.context)
+            self.assertNotIn('secret',str(caught.exception))
+            request.assert_called_once()
+
+    def test_actual_responses_object_extraction(self):
+        from types import SimpleNamespace
+        from src.horizon_synthesis import synthesize_horizon,HorizonSynthesisError
+        with patch.dict('os.environ',{'OPENAI_API_KEY':'unit-test-placeholder'}), patch('src.openai_client.OpenAI') as client:
+            api=client.return_value.__enter__.return_value
+            api.responses.create.return_value=SimpleNamespace(status='completed',output_text=json.dumps(self.output()))
+            result=synthesize_horizon(self.context)
+            self.assertEqual(result.analysis['identity']['ticker'],'TEST')
+            api.responses.create.assert_called_once()
+            self.assertEqual(client.call_args.kwargs['max_retries'],0)
+            api.responses.create.return_value=SimpleNamespace(status='incomplete',output_text='{}',incomplete_details=None)
+            with self.assertRaises(HorizonSynthesisError) as caught:synthesize_horizon(self.context)
+            self.assertEqual(caught.exception.synthesis_failure_type,'RESPONSE_EXTRACTION')
+
+    def test_no_rerun_or_persistence(self):
+        with patch('src.research_pipeline.run_stock_research',side_effect=AssertionError('No research')), \
+             patch('src.multi_agent.run_specialists',side_effect=AssertionError('No specialists')), \
+             patch('sqlite3.connect',side_effect=AssertionError('No DB')):
+            self.invoke(self.output())
+
+    def test_four_horizons_through_authoritative_builder(self):
+        for horizon in ('SHORT','SWING','MEDIUM','LONG'):
+            helper=FreshnessProvenanceTests()
+            artifact=helper._pipeline('MEDIUM' if horizon=='MEDIUM' else 'LONG')[0]
+            record=self.context.technical_source
+            if horizon=='SWING':
+                signal=record.signal;signal['horizon']='SWING_1_TO_4_WEEKS'
+                record=replace(record,signal_json=json.dumps(signal))
+            context=build_integration_context('TEST',horizon,instant(),fundamental=artifact,
+                        technical=record,integration_run_id='run-1')
+            result=self.invoke(self.output(context),context)
+            self.assertEqual(result.context.decision_horizon,horizon)
+            self.assertEqual(result.context.primary_authority,primary_authority(horizon))
+
+    def test_conflict_echo_validation_without_bypassing_readiness(self):
+        from src.horizon_synthesis import _packet,_validate,HorizonSynthesisError
+        from src.horizon_integration import ConflictAssessment
+        # Parser-level contract coverage only: THESIS_CONFLICT is not currently
+        # emitted by ready Step 3B contexts. The public builder gate is never patched.
+        for conflict in Conflict:
+            context=replace(self.context,conflict=ConflictAssessment(conflict,'parser-fixture'))
+            packet=_packet(context)
+            data=self.output(context)
+            _validate(data,packet)
+            data['identity']['conflict_classification']='ALTERED'
+            with self.assertRaises(HorizonSynthesisError):_validate(data,packet)

@@ -267,7 +267,7 @@ See the [V0.6 checkpoint](docs/V0_6_CHECKPOINT.md) for architecture, testing and
 - V0.7F Technical Signal Evaluation Integration — COMPLETE
 - V0.7G Technical Research Dashboard Integration — COMPLETE
 - V0.7 release sign-off — COMPLETE; no commit/tag performed by this review
-- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 3C trusted integration context and readiness integrity
+- V0.8A Horizon-Aware Research Synthesis — CURRENT: Step 4 Horizon Synthesis Agent — backend implemented
 - V0.8B portfolio-aware decision making — future scope
 
 Paper trading and execution remain later work. No backtested alpha or market-beating
@@ -311,14 +311,18 @@ or profitable-strategy claim is made.
 V0.8A begins with the [Horizon Synthesis contract and decision matrix](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md).
 Step 2 adds offline admission, horizon authority and immutable integration contexts.
 Step 3B implements Technical freshness and prospective Fundamental sidecars;
-readiness is limited to supported same-run cases, with unresolved policies blocked. No Horizon Synthesis Agent, dashboard integration or portfolio action is implemented.
+readiness is limited to supported same-run cases, with unresolved policies blocked. Dashboard integration and portfolio actions remain out of scope.
 
 V0.8A [Step 3A policy design](docs/V0_8A_FRESHNESS_PROVENANCE_POLICY.md) specifies
 Technical session-age boundaries and prospective Fundamental provenance/currentness.
 Step 3B implements the approved policy with explicit SYNTHESIS_READY/BLOCKED contexts.
 Legacy provenance and unresolved risk/applicability remain blocked; dashboard wiring
-and the Horizon Synthesis Agent are not implemented.
+is not implemented.
 
 Step 3C adds `require_synthesis_ready`: downstream consumers must recompute and
 validate policy results from retained sources before any synthesis call. A caller-set
-readiness label is insufficient. The Horizon Synthesis Agent remains unimplemented.
+readiness label is insufficient. Step 4 now uses this guarded boundary for backend Horizon Synthesis.
+
+See the [Horizon Synthesis Agent](docs/V0_8A_HORIZON_SYNTHESIS_AGENT.md) for strict
+research-only interpretation, evidence validation and limitations. V0.8A remains in
+progress; dashboard integration, persistence and V0.8B are not implemented.

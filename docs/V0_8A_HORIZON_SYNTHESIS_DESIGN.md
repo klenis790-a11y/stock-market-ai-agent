@@ -492,3 +492,12 @@ verification remains a prerequisite, not a substitute for policy recomputation.
 Legacy mutable envelopes are not retained as trusted sources; their detached historical
 metadata remains visible, and they cannot qualify current synthesis. No historical
 records or Step 3B readiness policies change.
+
+## Step 4 implementation
+
+The [Horizon Synthesis Agent](V0_8A_HORIZON_SYNTHESIS_AGENT.md) now implements one
+guarded structured interpretation call and an immutable IntegratedResearchView.
+Step 4 explicitly allows UNRESOLVED for residual interpretation ambiguity in ready
+contexts, in addition to each matrix row's ranges. It never admits blocked contexts.
+All original conclusions/conditions/provenance remain in the validated source context.
+No existing readiness policy or portfolio boundary is weakened.
