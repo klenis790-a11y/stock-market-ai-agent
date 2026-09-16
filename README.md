@@ -336,3 +336,5 @@ V0.8A [Step 5B sequencing](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md#step-5b--combi
 V0.8A [Step 5 combined research](docs/V0_8A_COMBINED_RESEARCH.md) now coordinates Technical-first research, prospective Fundamental provenance, trusted readiness and Horizon Synthesis. Dashboard/persistence remain pending.
 
 V0.8A [risk-applicability-v1](docs/V0_8A_FRESHNESS_PROVENANCE_POLICY.md#step-6a--risk-applicability) preserves valid adverse evidence as synthesis input without weakening independent readiness gates. Release review and live validation remain pending.
+
+V0.8A [final backend checkpoint](docs/V0_8A_RELEASE_CHECKPOINT.md): 479 tests pass and Technical orchestration is shared by backend and dashboard. Release sign-off is **NOT READY**: the single controlled live attempt failed at Horizon Synthesis before its OpenAI request; diagnosis remains pending.

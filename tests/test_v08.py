@@ -361,7 +361,7 @@ class FreshnessProvenanceTests(unittest.TestCase):
             object.__setattr__(corrupted, 'evidence_json', json.dumps(packet))
             self.assertEqual(technical_freshness(corrupted, instant()).state, Freshness.UNKNOWN)
 
-    def _pipeline(self, horizon='LONG', fail=False, risks=False):
+    def _pipeline(self, horizon='LONG', fail=False, risks=False, missing=False, rich=False):
         from src.models import InvestmentAnalysis
         from src.research_pipeline import run_stock_research
         source = fundamental()
@@ -370,12 +370,19 @@ class FreshnessProvenanceTests(unittest.TestCase):
         # Original typed interpretation objects are preserved by the mocked existing analyzer.
         values = {k:getattr(source.record,k) for k in values}
         values['portfolio_assessment'] = 'Portfolio context not supplied.'
+        if missing:
+            values['missing_data'] = ['Required coverage unavailable']
         if risks:
             values['major_risks'] = [InterpretationStatement('Observed uncertainty', ['E001'])]
             values['bear_case'] = [InterpretationStatement('Adverse thesis evidence', ['E001'])]
         analysis = InvestmentAnalysis(**values)
         packet = json.loads(source.evidence_json)
         packet['source'] = 'Alpha Vantage'
+        if rich:
+            packet['retrieved_facts']['second_value'] = 7.5
+            for field in ('major_risks', 'bear_case'):
+                values = getattr(analysis, field)
+                values[0].evidence_refs.append('E002')
         captured = []
         with patch('src.research_pipeline.build_stock_evidence', return_value=packet) as retrieval, \
              patch('src.research_pipeline.analyze_investment', side_effect=ValueError('failed') if fail else None, return_value=analysis) as analyst, \
@@ -810,7 +817,7 @@ class CombinedPipelineTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def exercise(self, horizon='LONG', failure=None, forged=False, risks=False):
+    def exercise(self, horizon='LONG', failure=None, forged=False, risks=False, rich=False):
         from contextlib import ExitStack
         from types import SimpleNamespace
         from src import horizon_pipeline as pipeline
@@ -822,19 +829,31 @@ class CombinedPipelineTests(unittest.TestCase):
                 conflicting_evidence_ids=signal.analysis.supporting_evidence_ids[:1]))
         else:
             signal = replace(signal, analysis=replace(signal.analysis, risk_notes=()))
+        if rich:
+            available = tuple(item['evidence_id'] for item in catalog.to_packet()['items'] if item['value'] is not None)[:2]
+            signal = replace(signal, analysis=replace(signal.analysis, risk_notes=tuple(
+                replace(note, evidence_ids=available) for note in signal.analysis.risk_notes)))
         before = asdict(signal)
         helper = FreshnessProvenanceTests()
-        artifact = helper._pipeline('MEDIUM' if horizon == 'MEDIUM' else 'LONG', risks=risks)[0]
+        artifact = helper._pipeline('MEDIUM' if horizon == 'MEDIUM' else 'LONG', risks=risks, missing=failure == 'MISSING', rich=rich)[0]
         events = []
         def technical(*args, **kwargs):
             events.append('technical')
             self.assertEqual(args[1], native)
             if failure == 'TECHNICAL_RESEARCH': raise ValueError('secret provider payload')
-            return SimpleNamespace(signal=signal, catalog=catalog)
+            from src import technical_pipeline as backend
+            snapshot, _ = fixtures.TechnicalAnalystTests().fixture()
+            with patch.object(backend, 'retrieve_historical_ohlcv', return_value=snapshot.historical_ohlcv) as retrieval, \
+                 patch.object(backend, 'analyze_technical_snapshot', return_value=signal) as analyst:
+                result = backend.run_technical_research(*args, **kwargs)
+                retrieval.assert_called_once()
+                analyst.assert_called_once()
+                self.assertEqual(analyst.call_args.args[2], native)
+                return result
         def fundamental_run(*args, **kwargs):
             events.append('fundamental')
             self.assertFalse(kwargs['persist_decision'])
-            self.assertEqual(kwargs['integration_run_id'], 'run-1')
+            self.assertEqual(kwargs['integration_run_id'], 'run-other' if failure == 'PROVENANCE' else 'run-1')
             if failure == 'FUNDAMENTAL_RESEARCH': raise ValueError('secret provider payload')
             kwargs['on_fundamental_artifact'](artifact)
             return artifact.analysis
@@ -862,10 +881,14 @@ class CombinedPipelineTests(unittest.TestCase):
             with patch('src.openai_client.request_text', return_value=json.dumps(data)) as request:
                 result = synthesize_horizon(context)
                 request.assert_called_once()
+                if rich:
+                    supplied = json.loads(request.call_args.kwargs['input'])
+                    self.assertEqual(len(supplied['fundamental']['analysis']['major_risks'][0]['evidence_refs']), 2)
+                    self.assertEqual(len(supplied['technical']['analysis']['risk_notes'][0]['evidence_ids']), 2)
             return result
         with ExitStack() as stack:
             stack.enter_context(patch('sqlite3.connect', side_effect=AssertionError('No persistence')))
-            stack.enter_context(patch.object(pipeline, 'uuid4', return_value=SimpleNamespace(hex='run-1')))
+            stack.enter_context(patch.object(pipeline, 'uuid4', return_value=SimpleNamespace(hex='run-other' if failure == 'PROVENANCE' else 'run-1')))
             clock = stack.enter_context(patch.object(pipeline, 'datetime'))
             clock.now.return_value = (instant() + timedelta(seconds=1) if failure == 'READINESS'
                                       else instant('2025-03-11T13:00:00+00:00'))
@@ -874,13 +897,13 @@ class CombinedPipelineTests(unittest.TestCase):
             f = stack.enter_context(patch.object(pipeline,'run_stock_research',side_effect=fundamental_run))
             s = stack.enter_context(patch.object(pipeline,'synthesize_horizon',side_effect=synthesis))
             select = stack.enter_context(patch.object(policy,'select_technical_horizon',wraps=select_technical_horizon))
-            stack.enter_context(patch.object(policy,'build_integration_context',side_effect=builder))
+            build_call = stack.enter_context(patch.object(policy,'build_integration_context',side_effect=builder))
             require = stack.enter_context(patch.object(policy,'require_synthesis_ready',wraps=policy.require_synthesis_ready))
             if failure or forged:
                 with self.assertRaises(pipeline.HorizonPipelineError) as caught:
                     pipeline.run_horizon_research('TEST', horizon, fundamental_horizon='MEDIUM' if horizon == 'MEDIUM' else 'LONG',
                         technical_as_of=instant('2025-03-11T13:00:00+00:00'), market_verified=True)
-                self.assertEqual(caught.exception.stage, 'READINESS' if forged else failure)
+                self.assertEqual(caught.exception.stage, 'READINESS' if forged or failure in ('MISSING', 'PROVENANCE') else failure)
                 self.assertNotIn('secret',str(caught.exception))
                 if forged: self.assertTrue(caught.exception.reasons)
                 if failure != 'HORIZON_SYNTHESIS': s.assert_not_called()
@@ -889,6 +912,11 @@ class CombinedPipelineTests(unittest.TestCase):
                     fundamental_horizon='MEDIUM' if horizon == 'MEDIUM' else 'LONG',
                     technical_as_of=instant('2025-03-11T13:00:00+00:00'),market_verified=True)
                 self.assertEqual(events, ['technical','fundamental','synthesis'])
+                self.assertEqual(result.view.context.primary_authority, primary_authority(horizon))
+                self.assertEqual(result.view.context.fundamental.source, artifact.analysis)
+                self.assertEqual(result.view.context.technical.source['analysis'], json.loads(json.dumps(asdict(signal.analysis))))
+                self.assertEqual(result.view.context.freshness_policy_version, 'technical-freshness-v1')
+                self.assertEqual(result.view.context.fundamental_policy_version, 'fundamental-provenance-v1')
                 self.assertEqual(result.view.context.decision_horizon,horizon)
                 self.assertEqual(result.view.context.technical.native_horizon,native)
                 self.assertEqual(result.view.context.integration_as_of,artifact.provenance['available_at'])
@@ -899,6 +927,9 @@ class CombinedPipelineTests(unittest.TestCase):
                 s.assert_called_once()
             select.assert_called_once()
             t.assert_called_once()
+            if failure in ('TECHNICAL_RESEARCH', 'FUNDAMENTAL_RESEARCH'):
+                build_call.assert_not_called()
+                require.assert_not_called()
             if failure == 'TECHNICAL_RESEARCH': f.assert_not_called()
             else: f.assert_called_once()
         self.assertEqual(asdict(signal),before)
@@ -947,3 +978,232 @@ class CombinedPipelineTests(unittest.TestCase):
         self.addCleanup(helper.doCleanups)
         with self.assertRaises(SynthesisReadinessError):
             require_synthesis_ready(replace(helper.context, risk_applicability_version='risk-applicability-v999'))
+
+    def test_combined_missing_data_remains_blocking_with_risks(self):
+        self.exercise(failure='MISSING', risks=True)
+
+    def test_combined_run_provenance_mismatch_blocks_with_risks(self):
+        self.exercise(failure='PROVENANCE', risks=True)
+
+    def test_rich_medium_packet_reaches_mocked_request(self):
+        self.exercise('MEDIUM', risks=True, rich=True)
+
+    def test_pre_request_substages_keep_safe_cause_and_zero_requests(self):
+        from src import horizon_synthesis as synthesis
+        helper = ReadinessIntegrityTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        for function, substage, error in [('_packet', 'PACKET_CONSTRUCTION', KeyError('SECRET raw body')),
+                                         ('canonical_json', 'INPUT_SERIALIZATION', TypeError('SECRET prompt')),
+                                         ('_schema', 'SCHEMA_CONSTRUCTION', ValueError('SECRET key'))]:
+            with patch.object(synthesis, function, side_effect=error), patch.object(synthesis.openai_client, 'request_text') as request:
+                with self.assertRaises(synthesis.HorizonSynthesisError) as caught:
+                    synthesis.synthesize_horizon(helper.context)
+                self.assertEqual(caught.exception.substage, substage)
+                self.assertEqual(caught.exception.error_type, type(error).__name__)
+                self.assertNotIn('SECRET', str(caught.exception))
+                request.assert_not_called()
+
+    def test_pipeline_preserves_typed_synthesis_diagnostic(self):
+        from src import horizon_pipeline as pipeline
+        from src.horizon_synthesis import HorizonSynthesisError
+        # Exercise existing complete fixtures; typed diagnostic is produced at the
+        # same synthesis boundary as local packet preparation.
+        def fail(context):
+            raise HorizonSynthesisError('PRE_REQUEST', substage='PACKET_CONSTRUCTION', error_type='KeyError')
+        with patch('src.horizon_synthesis.synthesize_horizon', side_effect=fail):
+            # exercise's synthesis wrapper uses the real imported entry at runtime.
+            with self.assertRaises(pipeline.HorizonPipelineError) as caught:
+                self.exercise('MEDIUM', risks=True)
+        self.assertEqual(caught.exception.substage, 'PACKET_CONSTRUCTION')
+        self.assertEqual(caught.exception.error_type, 'KeyError')
+        self.assertEqual(caught.exception.failure_type, 'PRE_REQUEST')
+
+    def test_technical_stage_diagnostics_survive_combined_boundary(self):
+        from contextlib import ExitStack
+        from src import technical_pipeline as backend, horizon_pipeline as pipeline
+        snapshot, _ = fixtures.TechnicalAnalystTests().fixture()
+        cases = [('retrieve_historical_ohlcv', 'MARKET_DATA', RuntimeError),
+                 ('build_technical_feature_snapshot', 'FEATURES', ValueError),
+                 ('build_technical_research_snapshot', 'EVIDENCE', TypeError),
+                 ('build_technical_evidence_catalog', 'EVIDENCE', ValueError),
+                 ('analyze_technical_snapshot', 'TECHNICAL_ANALYST', RuntimeError),
+                 ('analyze_technical_snapshot', 'TECHNICAL_ANALYST', KeyError)]
+        for function, substage, error_type in cases:
+            with self.subTest(function=function, error=error_type), ExitStack() as stack:
+                stack.enter_context(patch('sqlite3.connect', side_effect=AssertionError('No persistence')))
+                stack.enter_context(patch.object(backend, 'retrieve_historical_ohlcv', return_value=snapshot.historical_ohlcv))
+                failing = stack.enter_context(patch.object(backend, function, side_effect=error_type('SECRET raw provider prompt')))
+                technical = stack.enter_context(patch.object(pipeline, 'run_technical_research', wraps=backend.run_technical_research))
+                fundamental = stack.enter_context(patch.object(pipeline, 'run_stock_research'))
+                synthesis = stack.enter_context(patch.object(pipeline, 'synthesize_horizon'))
+                builder = stack.enter_context(patch.object(pipeline.policy, 'build_integration_context'))
+                with self.assertRaises(pipeline.HorizonPipelineError) as caught:
+                    pipeline.run_horizon_research('TEST', 'MEDIUM', fundamental_horizon='MEDIUM',
+                        technical_as_of=snapshot.historical_ohlcv.requested_as_of, market_verified=True)
+                error = caught.exception
+                self.assertEqual((error.stage, error.substage, error.error_type, error.failure_type),
+                                 ('TECHNICAL_RESEARCH', substage, error_type.__name__, 'TechnicalResearchError'))
+                self.assertNotIn('SECRET', str(error) + repr(vars(error)))
+                self.assertTrue(error.__suppress_context__)
+                technical.assert_called_once()
+                failing.assert_called_once()
+                fundamental.assert_not_called()
+                builder.assert_not_called()
+                synthesis.assert_not_called()
+
+    def test_malformed_technical_response_preserves_safe_type(self):
+        from src import technical_pipeline as backend, horizon_pipeline as pipeline
+        snapshot, _ = fixtures.TechnicalAnalystTests().fixture()
+        with patch.object(backend, 'retrieve_historical_ohlcv', return_value=snapshot.historical_ohlcv), \
+             patch('src.openai_client.request_text', return_value='SECRET not JSON') as request, \
+             patch.object(pipeline, 'run_stock_research') as fundamental, \
+             patch.object(pipeline, 'synthesize_horizon') as synthesis:
+            with self.assertRaises(pipeline.HorizonPipelineError) as caught:
+                pipeline.run_horizon_research('TEST', 'MEDIUM', fundamental_horizon='MEDIUM',
+                    technical_as_of=snapshot.historical_ohlcv.requested_as_of, market_verified=True)
+            self.assertEqual(caught.exception.stage, 'TECHNICAL_RESEARCH')
+            self.assertEqual(caught.exception.substage, 'TECHNICAL_ANALYST')
+            self.assertEqual(caught.exception.error_type, 'ValueError')
+            self.assertNotIn('SECRET', str(caught.exception) + repr(vars(caught.exception)))
+            request.assert_called_once()
+            fundamental.assert_not_called()
+            synthesis.assert_not_called()
+
+
+class TechnicalValidationDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.guard = patch('socket.socket.connect', side_effect=AssertionError('No network'))
+        self.guard.start()
+        self.addCleanup(self.guard.stop)
+
+    def test_response_failure_matrix_through_combined_pipeline(self):
+        from copy import deepcopy
+        from src import technical_pipeline as backend, horizon_pipeline as pipeline
+        helper = fixtures.TechnicalAnalystTests()
+        snapshot, catalog = helper.fixture()
+        valid = helper.output(catalog, 'BULLISH')
+        cases = [('', 'INVALID_JSON'), ('SECRET not JSON', 'INVALID_JSON'),
+                 ('null', 'SCHEMA_INVALID'), ('{}', 'SCHEMA_INVALID')]
+        def change(code, field, value):
+            data = deepcopy(valid)
+            data[field] = value
+            cases.append((json.dumps(data), code))
+        change('SIGNAL_CONFIDENCE_INVALID', 'signal', 'BUY')
+        for confidence in (-1, 101, True, 0.5):
+            change('SIGNAL_CONFIDENCE_INVALID', 'confidence', confidence)
+        change('CITATION_SHAPE_INVALID', 'supporting_evidence_ids', [None])
+        for field in ('supporting_evidence_ids', 'conflicting_evidence_ids'):
+            change('CITATION_INVALID', field, ['SECRET_UNKNOWN'])
+        change('CITATION_INVALID', 'supporting_evidence_ids', [])
+        change('CITATION_INVALID', 'supporting_evidence_ids', valid['supporting_evidence_ids'] * 2)
+        change('CITATION_OVERLAP', 'conflicting_evidence_ids', valid['supporting_evidence_ids'])
+        change('MISSING_ACK_INCOMPLETE', 'missing_evidence_ids', [])
+        change('CONFIDENCE_EVIDENCE_CONFLICT', 'confidence', 91)
+        change('STATEMENT_INVALID', 'summary', {'text': 'SECRET'})
+        for code, text in [('TEXT_INVALID', ''), ('PROHIBITED_CLAIM', 'Buy now.'),
+                           ('FEATURE_CITATION_MISSING', 'sma_200 is uncertain.'),
+                           ('NUMERIC_PROSE', 'Momentum is 123.'),
+                           ('SIGNAL_THESIS_CONFLICT', 'The thesis is bearish.')]:
+            change(code, 'summary', {'text': text, 'evidence_ids': valid['supporting_evidence_ids']})
+        change('STATEMENT_ARRAY_INVALID', 'risk_notes', None)
+        for field in ('confirmation_conditions', 'invalidation_conditions'):
+            change('CONDITIONS_REQUIRED', field, [])
+        change('MISSING_NOTE_INVALID', 'missing_data_acknowledgement', None)
+        # Response horizons are not model-owned: an extra horizon is a schema error.
+        change('SCHEMA_INVALID', 'horizon', 'SHORT_TERM_1_TO_5_SESSIONS')
+        before = asdict(snapshot), asdict(catalog)
+        for response, code in cases:
+            with self.subTest(code=code, response=response), \
+                 patch('sqlite3.connect', side_effect=AssertionError('No persistence')), \
+                 patch.object(backend, 'retrieve_historical_ohlcv', return_value=snapshot.historical_ohlcv) as retrieve, \
+                 patch.object(pipeline, 'run_technical_research', wraps=backend.run_technical_research) as technical, \
+                 patch('src.openai_client.request_text', return_value=response) as request, \
+                 patch.object(pipeline, 'run_stock_research') as fundamental, \
+                 patch.object(pipeline, 'synthesize_horizon') as synthesis:
+                with self.assertRaises(pipeline.HorizonPipelineError) as caught:
+                    pipeline.run_horizon_research('TEST', 'MEDIUM', fundamental_horizon='MEDIUM',
+                        technical_as_of=snapshot.historical_ohlcv.requested_as_of, market_verified=True)
+                error = caught.exception
+                self.assertEqual((error.stage, error.substage, error.error_type),
+                                 ('TECHNICAL_RESEARCH', 'TECHNICAL_ANALYST', 'ValueError'))
+                self.assertEqual(error.validation_reason, 'TECHNICAL_ANALYST_' + code)
+                self.assertNotIn('SECRET', str(error) + repr(vars(error)))
+                self.assertEqual(error.__context__.validation_reason, error.validation_reason)
+                self.assertTrue(error.__suppress_context__)
+                request.assert_called_once()
+                retrieve.assert_called_once()
+                technical.assert_called_once()
+                fundamental.assert_not_called()
+                synthesis.assert_not_called()
+        self.assertEqual(before, (asdict(snapshot), asdict(catalog)))
+
+    def test_valid_rich_response_shapes_unchanged(self):
+        from copy import deepcopy
+        helper = fixtures.TechnicalAnalystTests()
+        snapshot, catalog = helper.fixture(200)
+        available = [i.evidence_id for i in catalog.items if i.value is not None]
+        for signal in ('BULLISH', 'NEUTRAL', 'BEARISH'):
+            for confidence in (0, 90, 100):
+                data = helper.output(catalog, signal)
+                data['confidence'] = confidence
+                refs = list(dict.fromkeys(data['supporting_evidence_ids'] + available[:2]))
+                data['supporting_evidence_ids'] = refs
+                data['summary'] = {'text': 'Mixed evidence — caution; “conditional” remains uncertain.', 'evidence_ids': refs}
+                data['conflicting_evidence_ids'] = [] if confidence == 100 else [next(i for i in available if i not in refs)]
+                original = deepcopy(data)
+                result = helper.run_output(data, snapshot, catalog, 'SWING_1_TO_4_WEEKS')
+                self.assertEqual(data, original)
+                self.assertEqual(result.analysis.signal, signal)
+                self.assertEqual(result.analysis.confidence, confidence)
+                self.assertEqual(result.analysis.summary.evidence_ids, tuple(refs))
+                self.assertEqual(result.analysis.conflicting_evidence_ids, tuple(data['conflicting_evidence_ids']))
+                for field in ('confirmation_conditions', 'invalidation_conditions', 'risk_notes'):
+                    self.assertTrue(getattr(result.analysis, field))
+
+    def test_preflight_codes_and_client_errors_remain_distinct(self):
+        from src import technical_analyst as analyst, technical_pipeline as backend
+        helper = fixtures.TechnicalAnalystTests()
+        snapshot, catalog = helper.fixture()
+        tiny, tiny_catalog = helper.fixture(1)
+        cases = [(snapshot, catalog, 'UNKNOWN', 'HORIZON_INVALID'),
+                 (None, catalog, analyst.HORIZONS[0], 'INPUT_INVALID'),
+                 (snapshot, replace(catalog, methodology_version='future'), analyst.HORIZONS[0], 'CATALOG_MISMATCH'),
+                 (tiny, tiny_catalog, analyst.HORIZONS[0], 'INSUFFICIENT_EVIDENCE')]
+        with patch('src.openai_client.request_text') as request:
+            for s, c, h, code in cases:
+                with self.assertRaises(backend.TechnicalResearchError) as caught:
+                    backend.step('TECHNICAL_ANALYST', analyst.analyze_technical_snapshot, s, c, h)
+                self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_' + code)
+            request.assert_not_called()
+        # Duplicate IDs are normally rejected earlier by trusted-catalog equality.
+        duplicate = replace(catalog, items=catalog.items + (catalog.items[0],))
+        with patch.object(analyst, 'build_technical_evidence_catalog', return_value=duplicate), \
+             patch('src.openai_client.request_text') as request:
+            with self.assertRaises(analyst.TechnicalValidationError) as caught:
+                analyst.analyze_technical_snapshot(snapshot, duplicate, analyst.HORIZONS[0])
+            self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_CATALOG_DUPLICATE_IDS')
+            request.assert_not_called()
+        for message in ('OpenAI returned no text.', 'SECRET API body'):
+            with patch('src.openai_client.request_text', side_effect=RuntimeError(message)) as request:
+                with self.assertRaises(backend.TechnicalResearchError) as caught:
+                    backend.step('TECHNICAL_ANALYST', analyst.analyze_technical_snapshot, snapshot, catalog, analyst.HORIZONS[0])
+                self.assertIsNone(caught.exception.validation_reason)
+                self.assertEqual(caught.exception.exception_type, 'RuntimeError')
+                self.assertNotIn(message, str(caught.exception) + repr(vars(caught.exception)))
+                request.assert_called_once()
+        self.assertIsNone(backend.TechnicalResearchError('TECHNICAL_ANALYST', 'ValueError', 'SECRET').validation_reason)
+
+    def test_dashboard_keeps_existing_sanitized_presentation(self):
+        from src.dashboard import technical_adapter as adapter
+        from src import technical_pipeline as backend
+        from src.technical_analyst import TechnicalValidationError
+        snapshot, _ = fixtures.TechnicalAnalystTests().fixture()
+        with patch.object(backend, 'retrieve_historical_ohlcv', return_value=snapshot.historical_ohlcv), \
+             patch.object(backend, 'analyze_technical_snapshot', side_effect=TechnicalValidationError('TECHNICAL_ANALYST_CITATION_INVALID')), \
+             self.assertLogs('src.dashboard.technical_adapter', level='ERROR') as logs:
+            with self.assertRaises(adapter.TechnicalActionError) as caught:
+                adapter.run_technical_research('TEST', 'SWING_1_TO_4_WEEKS', snapshot.historical_ohlcv.requested_as_of, market_verified=True)
+        self.assertEqual(str(caught.exception), 'Technical technical analyst unavailable. Check inputs, source and server configuration; no automatic retry occurs.')
+        self.assertIn('exception=ValueError', logs.output[0])
+        self.assertNotIn('CITATION_INVALID', logs.output[0] + str(caught.exception))
