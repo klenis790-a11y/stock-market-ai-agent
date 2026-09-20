@@ -452,7 +452,8 @@ class TechnicalAnalystTests(unittest.TestCase):
             missing_data_acknowledgement='Longer trend evidence is incomplete.')
 
     def run_output(self,output,snapshot=None,catalog=None,horizon=None):
-        from src.technical_analyst import analyze_technical_snapshot,HORIZONS
+        from src.technical_analyst import HORIZONS
+        from historical_generation import analyze_technical_snapshot
         if snapshot is None: snapshot,catalog=self.fixture()
         with patch('src.openai_client.request_text',return_value=json.dumps(output)) as request:
             result=analyze_technical_snapshot(snapshot,catalog,horizon or HORIZONS[0])
@@ -509,7 +510,8 @@ class TechnicalAnalystTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.run_output(output)
 
     def test_preflight_no_requests(self):
-        from src.technical_analyst import analyze_technical_snapshot,HORIZONS
+        from src.technical_analyst import HORIZONS
+        from historical_generation import analyze_technical_snapshot
         snapshot,catalog=self.fixture()
         tiny,tiny_catalog=self.fixture(1)
         wrong=replace(catalog,provenance=replace(catalog.provenance,symbol='OTHER'))
@@ -522,7 +524,8 @@ class TechnicalAnalystTests(unittest.TestCase):
             request.assert_not_called()
 
     def test_conditions_and_no_fallback(self):
-        from src.technical_analyst import analyze_technical_snapshot,HORIZONS
+        from src.technical_analyst import HORIZONS
+        from historical_generation import analyze_technical_snapshot
         snapshot,catalog=self.fixture()
         for key in ('confirmation_conditions','invalidation_conditions'):
             output=self.output(catalog,'BEARISH');output[key]=[]
@@ -676,7 +679,7 @@ class TechnicalEvaluationTests(unittest.TestCase):
         # Preserved synthetic source packet, not a new Analyst call.
         _, catalog = TechnicalAnalystTests().fixture()
         from dataclasses import asdict
-        from src.technical_analyst import ANALYST_VERSION
+        from src.generation_contracts import TECHNICAL_V1 as ANALYST_VERSION
         signal = dict(provenance=catalog.to_packet()['provenance'], horizon=horizon,
             analysis=TechnicalAnalystTests().output(catalog, direction),
             evidence_catalog_version=catalog.methodology_version,

@@ -1,6 +1,17 @@
 # V0.8A — Horizon Synthesis Contract & Decision Matrix
 
-## Status and authority
+> Current release status: active generation is `technical-analyst-v2` and
+> `horizon-synthesis-v2` under `evidence-first-assembly-v1`. Historical v1
+> consumption remains supported. Earlier step-specific status statements below
+> are historical. G3 validated provider acceptance and one-shot compliance for one
+> controlled NVDA/MEDIUM execution; it did not validate investment accuracy or
+> long-term reliability. No retries/fallback/repair or semantic-entailment guarantee.
+> Research-only V0.8A is ready for separately authorized release publication;
+> portfolio-aware decision context remains future V0.8B work. See the
+> [release checkpoint](V0_8A_RELEASE_CHECKPOINT.md).
+
+
+## Historical design status and authority
 
 Step 1: design only, ready for human review. This is the authoritative V0.8A design
 baseline for later implementation, subject to explicit versioned design amendments.
@@ -598,3 +609,27 @@ recomputation compares it, rejecting unsupported or inconsistent versions. Histo
 contexts are not relabeled. Future policy changes require a new version. No source
 records, persistence, dashboard or dependency direction are changed in this step.
 No live validation was performed. Step 6 release review remains pending.
+
+
+## Step 6R — Source-available invalidation
+
+`source-available-invalidation-v1` supersedes the unconditional generated invalidation
+reference requirement. `_packet` derives availability exclusively from retained admitted
+F_INVALIDATION and T_INVALIDATION conditions. When either source provides invalidations,
+`invalidation_summary.condition_ids` must contain at least one valid invalidation ID.
+Confirmation IDs never substitute, and unknown IDs remain rejected. When neither source
+provides invalidations, that collection may be empty; no source condition is invented.
+Absence alone does not change admission or readiness. All independent gates remain intact.
+
+The packet appends `NO_SOURCE_INVALIDATION_CONDITION` to its existing limitations list
+only when no invalidations exist. The existing exact ordered `acknowledged_limitations`
+contract requires this token in accepted output. It is not a condition or a new source
+missing-data assertion. Sources and context remain unchanged. The version is supplied
+in packet policy_versions.invalidation and retained as IntegratedResearchView's frozen
+invalidation_policy_version. No output-schema field was added.
+
+The prompt explicitly describes both availability cases, confirmation non-substitution,
+summary grounding in both namespaces and exact limitation ordering. Conditions still
+require FORECAST; empty references do not exempt predictive prose from FORECAST rules.
+Original condition text, evidence and conclusions remain preserved in the context.
+No live validation occurred; V0.8A is not release-signed-off.

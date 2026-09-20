@@ -1,5 +1,8 @@
 """Explicit technical application actions; render helpers never retrieve or initialize."""
-from dataclasses import dataclass, asdict
+from src.market_data_models import normalize_symbol
+from src import technical_pipeline
+from src.technical_pipeline import TechnicalRun, HORIZONS
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from contextlib import closing
@@ -7,12 +10,6 @@ import logging
 import sqlite3
 from functools import wraps
 
-from src.historical_market_data import retrieve_historical_ohlcv
-from src.technical_features import build_technical_feature_snapshot
-from src.technical_evidence import build_technical_research_snapshot, build_technical_evidence_catalog
-from src.technical_analyst import analyze_technical_snapshot, HORIZONS
-from src.market_data_models import normalize_symbol
-from src.market_calendar import aware_utc
 from src.observation_resolution import SUPPORTED_MARKET
 from src.technical_signal_store import TechnicalSignalStore, create_technical_signal_record
 from src.technical_evaluation_store import TechnicalEvaluationStore
@@ -46,25 +43,14 @@ def safe_action(stage):
     return decorate
 
 
-@dataclass(frozen=True)
-class TechnicalRun:
-    snapshot: object
-    catalog: object
-    signal: object
-
-
-@safe_action('INPUT')
 def run_technical_research(ticker, horizon, as_of, *, market_verified):
-    ticker = normalize_symbol(ticker)
-    as_of = aware_utc(as_of)
-    if horizon not in HORIZONS or not market_verified:
-        raise ValueError('Approved horizon and confirmed market required.')
-    data = safe_action('MARKET_DATA')(retrieve_historical_ohlcv)(ticker, as_of, market=SUPPORTED_MARKET)
-    features = safe_action('FEATURES')(build_technical_feature_snapshot)(data)
-    snapshot = safe_action('EVIDENCE')(build_technical_research_snapshot)(data, features)
-    catalog = safe_action('EVIDENCE')(build_technical_evidence_catalog)(snapshot)
-    signal = safe_action('TECHNICAL_ANALYST')(analyze_technical_snapshot)(snapshot, catalog, horizon)
-    return TechnicalRun(snapshot, catalog, signal)
+    try:
+        return technical_pipeline.run_technical_research(ticker, horizon, as_of,
+                                                        market_verified=market_verified)
+    except technical_pipeline.TechnicalResearchError as error:
+        stage = error.stage
+        logging.getLogger(__name__).error('Technical workflow failed stage=%s exception=%s detail=withheld', stage, error.exception_type)
+        raise TechnicalActionError(f'Technical {stage.lower().replace("_", " ")} unavailable. Check inputs, source and server configuration; no automatic retry occurs.') from None
 
 
 def local_path(path, *, existing=False):

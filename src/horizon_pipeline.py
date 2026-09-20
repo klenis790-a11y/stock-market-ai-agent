@@ -4,16 +4,26 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 from src import horizon_integration as policy
-from src.dashboard.technical_adapter import run_technical_research
+from src.technical_pipeline import run_technical_research, TechnicalResearchError
 from src.research_pipeline import run_stock_research
 from src.technical_signal_store import create_technical_signal_record
-from src.horizon_synthesis import synthesize_horizon, IntegratedResearchView
+from src.horizon_synthesis import synthesize_horizon, IntegratedResearchView, HorizonSynthesisError
 from src.market_calendar import aware_utc
 from src.market_data_models import normalize_symbol
 
 
 class HorizonPipelineError(RuntimeError):
-    def __init__(self, stage, reasons=()):
+    def __init__(self, stage, reasons=(), *, substage=None, error_type=None, failure_type=None, validation_reason=None, semantic_reason=None, evidence_namespace=None, feature_family=None, response_detail=None, generation_substage=None, draft_reason=None):
+        self.generation_substage = generation_substage
+        self.draft_reason = draft_reason
+        self.response_detail = response_detail
+        self.feature_family = feature_family
+        self.evidence_namespace = evidence_namespace
+        self.semantic_reason = semantic_reason
+        self.validation_reason = validation_reason
+        self.substage = substage
+        self.error_type = error_type
+        self.failure_type = failure_type
         self.stage = stage
         self.reasons = tuple(reasons)
         super().__init__(f'Combined research failed at {stage}; no automatic retry.')
@@ -70,7 +80,12 @@ def run_horizon_research(ticker, decision_horizon, *, fundamental_horizon,
         view = synthesize_horizon(validated)
         return CombinedResearchResult(view, policy.TECHNICAL_HORIZON_SELECTION_VERSION,
                                       policy.COMBINED_RESEARCH_SEQUENCING_VERSION)
+    except TechnicalResearchError as error:
+        raise HorizonPipelineError(stage, substage=error.stage, error_type=error.exception_type,
+                                   failure_type='TechnicalResearchError', validation_reason=error.validation_reason, feature_family=error.feature_family, generation_substage=error.generation_substage, response_detail=error.response_detail) from None
     except policy.SynthesisReadinessError as error:
-        raise HorizonPipelineError(stage, error.reasons) from None
+        raise HorizonPipelineError(stage, error.reasons, substage='READINESS_VALIDATION', error_type='SynthesisReadinessError') from None
+    except HorizonSynthesisError as error:
+        raise HorizonPipelineError(stage, substage=error.substage, error_type=error.error_type or 'HorizonSynthesisError', failure_type=error.synthesis_failure_type, semantic_reason=error.semantic_reason, evidence_namespace=error.evidence_namespace, response_detail=error.response_detail, draft_reason=error.draft_reason) from None
     except Exception:
         raise HorizonPipelineError(stage) from None

@@ -1,5 +1,16 @@
 # V0.8A Step 5 — Combined backend research
 
+> Current release status: active generation is `technical-analyst-v2` and
+> `horizon-synthesis-v2` under `evidence-first-assembly-v1`. Historical v1
+> consumption remains supported. Earlier step-specific status statements below
+> are historical. G3 validated provider acceptance and one-shot compliance for one
+> controlled NVDA/MEDIUM execution; it did not validate investment accuracy or
+> long-term reliability. No retries/fallback/repair or semantic-entailment guarantee.
+> Research-only V0.8A is ready for separately authorized release publication;
+> portfolio-aware decision context remains future V0.8B work. See the
+> [release checkpoint](V0_8A_RELEASE_CHECKPOINT.md).
+
+
 `horizon_pipeline.run_horizon_research` accepts ticker, explicit decision horizon,
 explicit Fundamental native scope (MEDIUM or LONG), Technical as-of and explicit
 XNYS market confirmation. It returns frozen `CombinedResearchResult`, containing
@@ -12,12 +23,13 @@ No competing synthesis contract is introduced.
 The authoritative `select_technical_horizon` supplies the native scope under
 `technical-horizon-selection-v1`. `combined-research-sequencing-v1` requires
 Technical then Fundamental. Unsupported runtime policy versions fail before IO.
-The existing Technical application action is reused directly from
-`dashboard.technical_adapter`; it has no Streamlit rendering or page-load behavior.
+Technical orchestration is shared through `src.technical_pipeline`; the dashboard
+adapter calls the backend, and the backend does not import dashboard code.
 Its retrieval/features/evidence/analyst sequence is not copied. The existing
 `run_stock_research` then runs once with persistence disabled and a prospective
 sidecar callback. Default existing single-agent Fundamental behavior is preserved.
-No agents, prompts, indicator calculations or semantic validators are redesigned.
+Active v2 generation uses evidence-first drafts and deterministic assembly; indicator
+calculations and approved public semantic safeguards remain unchanged.
 
 Execution order does not change authority. MEDIUM/LONG stay Fundamental-primary;
 the selected SWING Technical scope remains 1–4 week timing/context. Fundamental
@@ -60,14 +72,16 @@ OpenAI output, source preservation, order/counts, failure stages, forged context
 rejection and zero database/network access. Existing calendar, temporal/provenance
 and synthesis regressions remain authoritative.
 
-Manual live validation is SKIPPED: current readiness conservatively blocks
-unstructured Fundamental risks/bear cases and Technical risk/conflicting evidence.
-Available successful fixtures deliberately control these conditions and are not
-independently validated live research. No new provider calls are made to manufacture
-a ready demonstration. Backend success does not establish investment quality.
+All four combined horizon paths have offline regression coverage. G3 also completed
+one controlled live NVDA/MEDIUM v2 execution. This proves execution and compliance
+for that attempt, not investment quality or long-term reliability. Full natural-language
+entailment remains outside validation. Combined output is transient.
 
-This implementation reuses a non-rendering application action housed under the
-existing dashboard package; extracting it into a shared module is deferred to avoid
-changing dashboard code. Full natural-language entailment remains outside semantic
-validation. Combined output is transient; V0.8A dashboard/persistence and V0.8B
-remain unimplemented. V0.8A is not declared complete.
+## Step 6 review update
+
+Technical orchestration now lives in `src/technical_pipeline.py`, shared directly by
+the horizon pipeline and the dashboard adapter. The adapter preserves its sanitized
+UI error contract. Earlier dependency and risk-block descriptions above record Step 5;
+`risk-applicability-v1` supersedes existence-only risk blocking. See the
+[release checkpoint](V0_8A_RELEASE_CHECKPOINT.md) for historical live failures and
+the final review and successful G3 validation record. No further live run is authorized.

@@ -1,3 +1,4 @@
+import historical_generation
 """Offline admission and policy contracts; no synthesis, market retrieval or persistence."""
 from dataclasses import FrozenInstanceError, asdict, replace
 from datetime import datetime, timezone, timedelta
@@ -673,7 +674,7 @@ class HorizonSynthesisTests(unittest.TestCase):
         return data
 
     def invoke(self, data, context=None):
-        from src.horizon_synthesis import synthesize_horizon
+        from historical_generation import synthesize_horizon
         with patch('src.openai_client.request_text',return_value=json.dumps(data)) as request:
             result = synthesize_horizon(context or self.context)
             request.assert_called_once()
@@ -692,7 +693,7 @@ class HorizonSynthesisTests(unittest.TestCase):
         self.assertEqual(result.methodology_version,'horizon-synthesis-v1')
 
     def test_blocked_and_forged_zero_calls(self):
-        from src.horizon_synthesis import synthesize_horizon
+        from historical_generation import synthesize_horizon
         from src.horizon_integration import SynthesisReadinessError
         blocked=build_integration_context('TEST','LONG',instant())
         with patch('src.openai_client.request_text') as request:
@@ -752,7 +753,8 @@ class HorizonSynthesisTests(unittest.TestCase):
         with self.assertRaises(HorizonSynthesisError):self.invoke(data)
 
     def test_json_extraction_and_api_failures_no_retry(self):
-        from src.horizon_synthesis import synthesize_horizon,HorizonSynthesisError
+        from src.horizon_synthesis import HorizonSynthesisError
+        from historical_generation import synthesize_horizon
         for response,kind in [('{broken','INVALID_JSON'),('```json\n{}\n```','INVALID_JSON'),('', 'RESPONSE_EXTRACTION'),(None,'RESPONSE_EXTRACTION')]:
             with patch('src.openai_client.request_text',return_value=response) as request:
                 with self.assertRaises(HorizonSynthesisError) as caught:synthesize_horizon(self.context)
@@ -765,7 +767,8 @@ class HorizonSynthesisTests(unittest.TestCase):
 
     def test_actual_responses_object_extraction(self):
         from types import SimpleNamespace
-        from src.horizon_synthesis import synthesize_horizon,HorizonSynthesisError
+        from src.horizon_synthesis import HorizonSynthesisError
+        from historical_generation import synthesize_horizon
         with patch.dict('os.environ',{'OPENAI_API_KEY':'unit-test-placeholder'}), patch('src.openai_client.OpenAI') as client:
             api=client.return_value.__enter__.return_value
             api.responses.create.return_value=SimpleNamespace(status='completed',output_text=json.dumps(self.output()))
@@ -817,7 +820,7 @@ class CombinedPipelineTests(unittest.TestCase):
         guard.start()
         self.addCleanup(guard.stop)
 
-    def exercise(self, horizon='LONG', failure=None, forged=False, risks=False, rich=False):
+    def exercise(self, horizon='LONG', failure=None, forged=False, risks=False, rich=False, response_mutator=None, expected_semantic=None, expected_namespace=None):
         from contextlib import ExitStack
         from types import SimpleNamespace
         from src import horizon_pipeline as pipeline
@@ -869,7 +872,7 @@ class CombinedPipelineTests(unittest.TestCase):
         def synthesis(context):
             events.append('synthesis')
             if failure == 'HORIZON_SYNTHESIS': raise ValueError('secret model payload')
-            from src.horizon_synthesis import synthesize_horizon
+            from historical_generation import synthesize_horizon
             if risks:
                 from src.horizon_synthesis import _packet
                 packet = _packet(context)
@@ -878,8 +881,14 @@ class CombinedPipelineTests(unittest.TestCase):
                 self.assertEqual(context.technical.source['analysis']['risk_notes'], json.loads(json.dumps(asdict(signal.analysis)))['risk_notes'])
                 self.assertEqual(context.risk_applicability_version, 'risk-applicability-v1')
             data = HorizonSynthesisTests().output(context)
+            if response_mutator is not None:
+                response_mutator(data)
             with patch('src.openai_client.request_text', return_value=json.dumps(data)) as request:
-                result = synthesize_horizon(context)
+                try:
+                    result = synthesize_horizon(context)
+                finally:
+                    if expected_semantic:
+                        request.assert_called_once()
                 request.assert_called_once()
                 if rich:
                     supplied = json.loads(request.call_args.kwargs['input'])
@@ -899,14 +908,23 @@ class CombinedPipelineTests(unittest.TestCase):
             select = stack.enter_context(patch.object(policy,'select_technical_horizon',wraps=select_technical_horizon))
             build_call = stack.enter_context(patch.object(policy,'build_integration_context',side_effect=builder))
             require = stack.enter_context(patch.object(policy,'require_synthesis_ready',wraps=policy.require_synthesis_ready))
-            if failure or forged:
+            if failure or forged or expected_semantic:
                 with self.assertRaises(pipeline.HorizonPipelineError) as caught:
                     pipeline.run_horizon_research('TEST', horizon, fundamental_horizon='MEDIUM' if horizon == 'MEDIUM' else 'LONG',
                         technical_as_of=instant('2025-03-11T13:00:00+00:00'), market_verified=True)
-                self.assertEqual(caught.exception.stage, 'READINESS' if forged or failure in ('MISSING', 'PROVENANCE') else failure)
+                if expected_semantic:
+                    self.assertEqual(caught.exception.failure_type, 'SEMANTIC_VALIDATION')
+                    self.assertEqual(caught.exception.semantic_reason, expected_semantic)
+                    if expected_namespace is not None:
+                        self.assertEqual(caught.exception.evidence_namespace, expected_namespace)
+                    self.assertEqual(caught.exception.error_type, 'HorizonSynthesisError')
+                    self.assertNotIn('SECRET', str(caught.exception) + repr(vars(caught.exception)))
+                    self.assertEqual(events, ['technical','fundamental','synthesis'])
+                    s.assert_called_once()
+                self.assertEqual(caught.exception.stage, 'HORIZON_SYNTHESIS' if expected_semantic else 'READINESS' if forged or failure in ('MISSING', 'PROVENANCE') else failure)
                 self.assertNotIn('secret',str(caught.exception))
                 if forged: self.assertTrue(caught.exception.reasons)
-                if failure != 'HORIZON_SYNTHESIS': s.assert_not_called()
+                if failure != 'HORIZON_SYNTHESIS' and not expected_semantic: s.assert_not_called()
             else:
                 result = pipeline.run_horizon_research('TEST',horizon,
                     fundamental_horizon='MEDIUM' if horizon == 'MEDIUM' else 'LONG',
@@ -998,7 +1016,7 @@ class CombinedPipelineTests(unittest.TestCase):
                                          ('_schema', 'SCHEMA_CONSTRUCTION', ValueError('SECRET key'))]:
             with patch.object(synthesis, function, side_effect=error), patch.object(synthesis.openai_client, 'request_text') as request:
                 with self.assertRaises(synthesis.HorizonSynthesisError) as caught:
-                    synthesis.synthesize_horizon(helper.context)
+                    historical_generation.synthesize_horizon(helper.context)
                 self.assertEqual(caught.exception.substage, substage)
                 self.assertEqual(caught.exception.error_type, type(error).__name__)
                 self.assertNotIn('SECRET', str(caught.exception))
@@ -1011,7 +1029,7 @@ class CombinedPipelineTests(unittest.TestCase):
         # same synthesis boundary as local packet preparation.
         def fail(context):
             raise HorizonSynthesisError('PRE_REQUEST', substage='PACKET_CONSTRUCTION', error_type='KeyError')
-        with patch('src.horizon_synthesis.synthesize_horizon', side_effect=fail):
+        with patch('historical_generation.synthesize_horizon', side_effect=fail):
             # exercise's synthesis wrapper uses the real imported entry at runtime.
             with self.assertRaises(pipeline.HorizonPipelineError) as caught:
                 self.exercise('MEDIUM', risks=True)
@@ -1064,7 +1082,7 @@ class CombinedPipelineTests(unittest.TestCase):
                     technical_as_of=snapshot.historical_ohlcv.requested_as_of, market_verified=True)
             self.assertEqual(caught.exception.stage, 'TECHNICAL_RESEARCH')
             self.assertEqual(caught.exception.substage, 'TECHNICAL_ANALYST')
-            self.assertEqual(caught.exception.error_type, 'ValueError')
+            self.assertEqual(caught.exception.error_type, 'TechnicalGenerationError')
             self.assertNotIn('SECRET', str(caught.exception) + repr(vars(caught.exception)))
             request.assert_called_once()
             fundamental.assert_not_called()
@@ -1118,6 +1136,7 @@ class TechnicalValidationDiagnosticTests(unittest.TestCase):
                  patch('sqlite3.connect', side_effect=AssertionError('No persistence')), \
                  patch.object(backend, 'retrieve_historical_ohlcv', return_value=snapshot.historical_ohlcv) as retrieve, \
                  patch.object(pipeline, 'run_technical_research', wraps=backend.run_technical_research) as technical, \
+                 patch.object(backend, 'analyze_technical_snapshot', historical_generation.analyze_technical_snapshot), \
                  patch('src.openai_client.request_text', return_value=response) as request, \
                  patch.object(pipeline, 'run_stock_research') as fundamental, \
                  patch.object(pipeline, 'synthesize_horizon') as synthesis:
@@ -1173,7 +1192,7 @@ class TechnicalValidationDiagnosticTests(unittest.TestCase):
         with patch('src.openai_client.request_text') as request:
             for s, c, h, code in cases:
                 with self.assertRaises(backend.TechnicalResearchError) as caught:
-                    backend.step('TECHNICAL_ANALYST', analyst.analyze_technical_snapshot, s, c, h)
+                    backend.step('TECHNICAL_ANALYST', historical_generation.analyze_technical_snapshot, s, c, h)
                 self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_' + code)
             request.assert_not_called()
         # Duplicate IDs are normally rejected earlier by trusted-catalog equality.
@@ -1187,7 +1206,7 @@ class TechnicalValidationDiagnosticTests(unittest.TestCase):
         for message in ('OpenAI returned no text.', 'SECRET API body'):
             with patch('src.openai_client.request_text', side_effect=RuntimeError(message)) as request:
                 with self.assertRaises(backend.TechnicalResearchError) as caught:
-                    backend.step('TECHNICAL_ANALYST', analyst.analyze_technical_snapshot, snapshot, catalog, analyst.HORIZONS[0])
+                    backend.step('TECHNICAL_ANALYST', historical_generation.analyze_technical_snapshot, snapshot, catalog, analyst.HORIZONS[0])
                 self.assertIsNone(caught.exception.validation_reason)
                 self.assertEqual(caught.exception.exception_type, 'RuntimeError')
                 self.assertNotIn(message, str(caught.exception) + repr(vars(caught.exception)))
@@ -1207,3 +1226,650 @@ class TechnicalValidationDiagnosticTests(unittest.TestCase):
         self.assertEqual(str(caught.exception), 'Technical technical analyst unavailable. Check inputs, source and server configuration; no automatic retry occurs.')
         self.assertIn('exception=ValueError', logs.output[0])
         self.assertNotIn('CITATION_INVALID', logs.output[0] + str(caught.exception))
+
+
+class HorizonSemanticDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No live network'))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def test_every_semantic_reason_through_real_combined_boundary(self):
+        from src.horizon_synthesis import SEMANTIC_REASONS
+        def top(key, value):
+            return lambda data: data.__setitem__(key, value)
+        def statement(field, key, value):
+            return lambda data: data[field].__setitem__(key, value)
+        cases = [
+            ('POSTURE_NOT_ALLOWED', top('timing_posture', 'NO_ACTION')),
+            ('LIMITATIONS_MISMATCH', top('acknowledged_limitations', ['SECRET'])),
+            ('INVALIDATION_REFERENCE_REQUIRED', statement('invalidation_summary', 'condition_ids', [])),
+            ('INVALIDATION_REFERENCE_REQUIRED', statement('invalidation_summary', 'condition_ids', ['T_CONFIRMATION:0'])),
+            ('CONDITION_REQUIRES_FORECAST', statement('invalidation_summary', 'classification', 'AI_INTERPRETATION')),
+            ('NUMERIC_PROSE', statement('synthesis_summary', 'text', 'SECRET observed 123.')),
+            ('PROHIBITED_ACTION_LANGUAGE', statement('synthesis_summary', 'text', 'SECRET portfolio allocation.')),
+            ('PREDICTIVE_TEXT_REQUIRES_FORECAST', statement('synthesis_summary', 'text', 'The evidence could strengthen.')),
+            ('WAIT_CONDITION_REQUIRED', top('timing_posture', 'WAIT_FOR_CONFIRMATION')),
+        ]
+        for namespace in ('fundamental', 'technical'):
+            def overlap(data, namespace=namespace):
+                data[f'conflicting_{namespace}_evidence_ids'] = data[f'supporting_{namespace}_evidence_ids'][:]
+            cases.append(('EVIDENCE_ROLE_OVERLAP', overlap))
+        covered = set()
+        for reason, mutate in cases:
+            reason = 'HORIZON_SYNTHESIS_' + reason
+            covered.add(reason)
+            with self.subTest(reason=reason):
+                CombinedPipelineTests().exercise('MEDIUM', risks=True, rich=True,
+                    response_mutator=mutate, expected_semantic=reason)
+        self.assertEqual(covered, SEMANTIC_REASONS)
+
+    def test_valid_edges_preserve_frozen_view_and_namespaces(self):
+        from copy import deepcopy
+        from dataclasses import FrozenInstanceError
+        from src.horizon_synthesis import _packet, _validate, HorizonSynthesisError
+        helper = HorizonSynthesisTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        original = helper.context
+        for posture in ('FAVORABLE_NOW', 'WAIT_FOR_CONFIRMATION', 'UNRESOLVED'):
+            for confidence in (0, 100):
+                data = helper.output(posture=posture)
+                data['synthesis_confidence'] = confidence
+                before = deepcopy(data)
+                view = helper.invoke(data)
+                self.assertEqual(data, before)
+                self.assertEqual(view.context, original)
+                self.assertEqual(view.analysis, data)
+                with self.assertRaises(FrozenInstanceError):
+                    view.analysis_json = '{}'
+        # Packet parser coverage of the existing matrix, never bypass the IO readiness gate.
+        for direction, signal, posture in [('NEUTRAL', 'NEUTRAL', 'NO_ACTION'),
+                                           ('UNFAVORABLE', 'BEARISH', 'UNFAVORABLE_NOW')]:
+            context = replace(original, fundamental=replace(original.fundamental, direction=FundamentalDirection(direction)),
+                              technical=replace(original.technical, recommendation=signal))
+            packet = _packet(context)
+            data = helper.output(context, posture)
+            packet['limitations'] = []
+            data['acknowledged_limitations'] = []
+            self.assertEqual(json.loads(_validate(data, packet)), data)
+        def rich(data):
+            data['synthesis_summary']['fundamental_evidence_ids'] = ['E001', 'E002']
+            data['synthesis_summary']['technical_evidence_ids'] = ['T001', 'T002']
+            data['conflicting_fundamental_evidence_ids'] = ['E002']
+            data['conflicting_technical_evidence_ids'] = ['T001', 'T002']
+            data['major_integrated_risks'] = [deepcopy(data['agreement_explanation'])]
+        CombinedPipelineTests().exercise('MEDIUM', risks=True, rich=True, response_mutator=rich)
+        self.assertIsNone(HorizonSynthesisError('SEMANTIC_VALIDATION', semantic_reason='SECRET').semantic_reason)
+
+    def test_other_classifications_are_not_relabeled_semantic(self):
+        from src.horizon_synthesis import HorizonSynthesisError
+        helper = HorizonSynthesisTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        for field in helper.output()['identity']:
+            data = helper.output()
+            data['identity'][field] = 'CHANGED'
+            with self.assertRaises(HorizonSynthesisError) as caught:
+                helper.invoke(data)
+            self.assertEqual(caught.exception.synthesis_failure_type, 'IDENTITY_MISMATCH')
+            self.assertIsNone(caught.exception.semantic_reason)
+        for field, value, kind in [
+            ('synthesis_confidence', 101, 'SCHEMA_VALIDATION'),
+            ('timing_posture', 'BUY', 'INVALID_ENUM'),
+            ('supporting_fundamental_evidence_ids', ['SECRET'], 'INVALID_EVIDENCE_REFERENCE'),
+            ('conflicting_technical_evidence_ids', ['SECRET'], 'INVALID_EVIDENCE_REFERENCE')]:
+            data = helper.output()
+            data[field] = value
+            with self.assertRaises(HorizonSynthesisError) as caught:
+                helper.invoke(data)
+            self.assertEqual(caught.exception.synthesis_failure_type, kind)
+            self.assertIsNone(caught.exception.semantic_reason)
+
+    def test_remaining_structural_and_evidence_branches_fail_closed(self):
+        from src.horizon_synthesis import HorizonSynthesisError, _packet
+        from historical_generation import synthesize_horizon
+        helper = HorizonSynthesisTests()
+        helper.setUp()
+        self.addCleanup(helper.doCleanups)
+        packet = _packet(helper.context)
+        cases = []
+        def top(kind, key, value):
+            data = helper.output(); data[key] = value; cases.append((data, kind))
+        def statement(kind, key, value):
+            data = helper.output(); data['agreement_explanation'][key] = value; cases.append((data, kind))
+        cases.append(({}, 'SCHEMA_VALIDATION'))
+        top('SCHEMA_VALIDATION', 'supporting_fundamental_evidence_ids', [None])
+        top('INVALID_EVIDENCE_REFERENCE', 'supporting_fundamental_evidence_ids', ['E001', 'E001'])
+        top('SCHEMA_VALIDATION', 'synthesis_summary', {})
+        statement('INVALID_ENUM', 'classification', 'RETRIEVED_FACT')
+        statement('INVALID_EVIDENCE_REFERENCE', 'condition_ids', ['SECRET'])
+        statement('SCHEMA_VALIDATION', 'text', '')
+        top('SCHEMA_VALIDATION', 'major_integrated_risks', None)
+        data = helper.output()
+        data['agreement_explanation']['fundamental_evidence_ids'] = []
+        data['agreement_explanation']['technical_evidence_ids'] = []
+        cases.append((data, 'INVALID_EVIDENCE_REFERENCE'))
+        data = helper.output()
+        data['synthesis_summary']['fundamental_evidence_ids'] = []
+        cases.append((data, 'INVALID_EVIDENCE_REFERENCE'))
+        for condition in ('F_INVALIDATION:0', 'T_CONFIRMATION:0'):
+            data = helper.output()
+            stmt = data['agreement_explanation']
+            stmt['condition_ids'] = [condition]; stmt['classification'] = 'FORECAST'
+            stmt['fundamental_evidence_ids' if condition.startswith('F_') else 'technical_evidence_ids'] = []
+            cases.append((data, 'INVALID_EVIDENCE_REFERENCE'))
+        # Valid known feature name without its own reference is rejected.
+        cited = helper.output()['agreement_explanation']['technical_evidence_ids']
+        row = next(row for row in packet['technical']['catalog'] if row['evidence_id'] not in cited)
+        statement('INVALID_EVIDENCE_REFERENCE', 'text', row['label'])
+        for data, kind in cases:
+            with self.subTest(kind=kind), \
+                 patch('src.openai_client.request_text', return_value=json.dumps(data)) as request, \
+                 patch('sqlite3.connect', side_effect=AssertionError('No persistence')):
+                with self.assertRaises(HorizonSynthesisError) as caught:
+                    synthesize_horizon(helper.context)
+                self.assertEqual(caught.exception.synthesis_failure_type, kind)
+                self.assertIsNone(caught.exception.semantic_reason)
+                request.assert_called_once()
+
+
+class TechnicalProhibitedClaimTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No network'))
+        guard.start(); self.addCleanup(guard.stop)
+        self.helper = fixtures.TechnicalAnalystTests()
+        self.snapshot, self.catalog = self.helper.fixture(200)
+
+    def parse_text(self, text, field='summary'):
+        from src.technical_analyst import _preflight, _parse, HORIZONS
+        data = self.helper.output(self.catalog)
+        if field == 'missing_data_acknowledgement':
+            data[field] = text
+        else:
+            item = data[field][0] if isinstance(data[field], list) else data[field]
+            item['text'] = text
+            item['evidence_ids'] = [i.evidence_id for i in self.catalog.items if i.value is not None]
+        items, available = _preflight(self.snapshot, self.catalog, HORIZONS[0])
+        return _parse(data, items, available)
+
+    def test_phrase_matrix_existing_lexical_and_numeric_contract(self):
+        from src.technical_analyst import TechnicalValidationError
+        accepted = [
+            'Momentum remains positive.', 'Price is above sma_50.',
+            'Volume is elevated relative to its recent average.',
+            'The setup would weaken if momentum turns negative.',
+            'Confirmation would require continued strength in trend evidence.',
+            'The short-term signal is bullish but conflicting evidence remains.',
+            'The signal weakens if momentum deteriorates.', 'Wait for confirmation.',
+            'Selling pressure is elevated.', 'The evidence supports caution.',
+            'Momentum informs the interpretation.',
+        ]
+        prohibited = [
+            'Buy at $123.', 'SELL at $123.', 'Set a limit order at $123.',
+            'Place a stop-loss at the recent low.', 'Take-profit is not specified.',
+            'A breakout above recent highs would strengthen the setup.',
+            'Resistance remains overhead.', 'Support is weakening.',
+            'The evidence provides support for the thesis.', 'No buy instruction is supplied.',
+            'The current quote is unavailable.', 'The order of indicators is unchanged.',
+            '"support"', 'STOP/LOSS is absent.', 'stopXloss is absent.',
+            'allocation is outside scope.',
+        ]
+        numeric = [
+            'Price is above its 50-day moving average.',
+            'Volume is elevated relative to the 20-day average.',
+            'A move above the 20-day high would confirm momentum.',
+            'Enter at $123.', 'Sell price was $123.', 'Place a stop at $123.',
+            'Target $123.', 'Exit the position at $123.', 'Price was 123.45.',
+            'Momentum is 5%.', 'Price is above SMA50.',
+        ]
+        # Sell is caught before digits: explicit first-failure ordering.
+        numeric.remove('Sell price was $123.')
+        prohibited.append('Sell price was $123.')
+        for text in accepted:
+            with self.subTest(text=text): self.parse_text(text)
+        for suffix, texts in [('PROHIBITED_CLAIM', prohibited), ('NUMERIC_PROSE', numeric)]:
+            for text in texts:
+                with self.subTest(text=text), self.assertRaises(TechnicalValidationError) as caught:
+                    self.parse_text(text)
+                self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_' + suffix)
+        # Characterize documented lexical limitations; acceptance is NOT contract approval.
+        for text in ['Enter now.', 'Exit the position.', 'Target the prior high.',
+                     'Place a stop at the prior low.', 'Price could test prior highs.',
+                     'Downside risk increases below the recent low.', 'current  quote',
+                     'stoploss', 'stop--loss']:
+            with self.subTest(known_lexical_limit=text): self.parse_text(text)
+
+    def test_identical_rule_in_every_actual_text_field(self):
+        from src.technical_analyst import TechnicalValidationError
+        for field in ('summary', 'thesis', 'confirmation_conditions', 'invalidation_conditions',
+                      'risk_notes', 'missing_data_acknowledgement'):
+            with self.subTest(field=field):
+                self.parse_text('Momentum informs the interpretation.', field)
+                with self.assertRaises(TechnicalValidationError) as caught:
+                    self.parse_text('The evidence provides support.', field)
+                self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_PROHIBITED_CLAIM')
+
+    def test_prompt_clarification_and_valid_request_regression(self):
+        from src.technical_analyst import INSTRUCTIONS, HORIZONS
+        self.assertIn('even in negated, quoted or benign descriptive prose', INSTRUCTIONS)
+        self.assertIn('including missing-data acknowledgement', INSTRUCTIONS)
+        for signal in ('BULLISH', 'NEUTRAL', 'BEARISH'):
+            for horizon in HORIZONS:
+                data = self.helper.output(self.catalog, signal)
+                result = self.helper.run_output(data, self.snapshot, self.catalog, horizon)
+                self.assertEqual(result.analysis.signal, signal)
+                self.assertEqual(result.horizon, horizon)
+
+
+class HorizonConditionForecastTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = HorizonSynthesisTests()
+        self.helper.setUp()
+        self.addCleanup(self.helper.doCleanups)
+
+    def test_condition_reference_matrix_and_source_preservation(self):
+        from src.horizon_synthesis import _packet, HorizonSynthesisError
+        context = self.helper.context
+        packet = _packet(context)
+        before = (context.fundamental.source, context.technical.source)
+        texts = [
+            'The Technical Analyst identified continued momentum as confirmation.',
+            'The source invalidation condition remains a deterioration in trend.',
+            'The analyst has identified a confirmation condition.',
+            'If momentum continues, the setup strengthens.',
+            'Confirmation requires continued positive momentum.',
+            'The source thesis would weaken if momentum turns negative.',
+            'The condition has already occurred.', 'The condition may occur.',
+            'Watch for the condition.',
+        ]
+        for condition_id, condition in packet['conditions'].items():
+            for text in texts:
+                data = self.helper.output()
+                stmt = data['agreement_explanation']
+                stmt['text'] = text
+                stmt['condition_ids'] = [condition_id]
+                field = 'fundamental_evidence_ids' if condition_id.startswith('F_') else 'technical_evidence_ids'
+                stmt[field] = condition['evidence_refs' if condition_id.startswith('F_') else 'evidence_ids']
+                with self.subTest(condition=condition_id, text=text):
+                    with self.assertRaises(HorizonSynthesisError) as caught:
+                        self.helper.invoke(data)
+                    self.assertEqual(caught.exception.semantic_reason, 'HORIZON_SYNTHESIS_CONDITION_REQUIRES_FORECAST')
+                    stmt['classification'] = 'FORECAST'
+                    view = self.helper.invoke(data)
+                    self.assertEqual(view.context, context)
+        self.assertEqual(before, (context.fundamental.source, context.technical.source))
+
+    def test_all_statement_fields_require_forecast_for_conditions(self):
+        from src.horizon_synthesis import NARRATIVES, HorizonSynthesisError
+        for field in (*NARRATIVES, 'major_integrated_risks'):
+            data = self.helper.output()
+            statement = dict(data['invalidation_summary'])
+            statement['classification'] = 'AI_INTERPRETATION'
+            data[field] = [statement] if field == 'major_integrated_risks' else statement
+            with self.subTest(field=field), self.assertRaises(HorizonSynthesisError) as caught:
+                self.helper.invoke(data)
+            self.assertEqual(caught.exception.semantic_reason, 'HORIZON_SYNTHESIS_CONDITION_REQUIRES_FORECAST')
+            statement['classification'] = 'FORECAST'
+            self.helper.invoke(data)
+
+    def test_current_state_and_separate_predictive_rule(self):
+        from src.horizon_synthesis import INSTRUCTIONS, HorizonSynthesisError
+        self.assertIn('EVERY statement with nonempty condition_ids', INSTRUCTIONS)
+        self.assertIn('including descriptive attribution', INSTRUCTIONS)
+        for text in ['Momentum is positive.', 'The Technical signal is bullish.',
+                     'The source contains a confirmation condition.']:
+            data = self.helper.output()
+            data['agreement_explanation']['text'] = text
+            result = self.helper.invoke(data)
+            self.assertEqual(result.analysis['agreement_explanation']['classification'], 'AI_INTERPRETATION')
+        data = self.helper.output()
+        data['agreement_explanation']['text'] = 'The thesis would weaken if momentum turns negative.'
+        with self.assertRaises(HorizonSynthesisError) as caught:
+            self.helper.invoke(data)
+        self.assertEqual(caught.exception.semantic_reason, 'HORIZON_SYNTHESIS_PREDICTIVE_TEXT_REQUIRES_FORECAST')
+        # Characterize existing lexical limits, not semantic endorsement of the claims.
+        for text in ['If momentum continues, the setup strengthens.', 'The condition may occur.',
+                     'The condition has already occurred.']:
+            data = self.helper.output(); data['agreement_explanation']['text'] = text
+            self.helper.invoke(data)
+
+
+class HorizonEvidenceRoleTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = HorizonSynthesisTests(); self.helper.setUp()
+        self.addCleanup(self.helper.doCleanups)
+
+    def test_role_matrix_and_safe_namespace_propagation(self):
+        from src.horizon_synthesis import HorizonSynthesisError
+        for namespace in ('fundamental', 'technical'):
+            support = f'supporting_{namespace}_evidence_ids'
+            conflict = f'conflicting_{namespace}_evidence_ids'
+            data = self.helper.output()
+            # A global conflicting ID can still ground multiple statement citations.
+            data[conflict] = data[support][:]; data[support] = []
+            self.helper.invoke(data)
+            def overlap(data, support=support, conflict=conflict):
+                data[conflict] = data[support][:]
+            CombinedPipelineTests().exercise('MEDIUM', risks=True, rich=True,
+                response_mutator=overlap, expected_semantic='HORIZON_SYNTHESIS_EVIDENCE_ROLE_OVERLAP',
+                expected_namespace=namespace.upper())
+            for value in (['UNKNOWN'], self.helper.output()[support] * 2):
+                data = self.helper.output(); data[conflict] = value
+                with self.assertRaises(HorizonSynthesisError) as caught:
+                    self.helper.invoke(data)
+                self.assertEqual(caught.exception.synthesis_failure_type, 'INVALID_EVIDENCE_REFERENCE')
+                self.assertIsNone(caught.exception.evidence_namespace)
+        self.assertIsNone(HorizonSynthesisError('SEMANTIC_VALIDATION',
+            semantic_reason='HORIZON_SYNTHESIS_EVIDENCE_ROLE_OVERLAP', evidence_namespace='SECRET').evidence_namespace)
+
+    def test_namespace_identity_and_role_scope_parser_contract(self):
+        from copy import deepcopy
+        from src.horizon_synthesis import _packet, _validate
+        packet = _packet(self.helper.context)
+        data = self.helper.output()
+        # Parser-only hypothetical catalog collision; no forged context crosses readiness.
+        fid = data['supporting_fundamental_evidence_ids'][0]
+        tid = data['supporting_technical_evidence_ids'][0]
+        for row in packet['technical']['catalog']:
+            if row['evidence_id'] == tid: row['evidence_id'] = fid
+        for value in packet['conditions'].values():
+            if 'evidence_ids' in value:
+                value['evidence_ids'] = [fid if x == tid else x for x in value['evidence_ids']]
+        for field in ('synthesis_summary','agreement_explanation','horizon_interpretation','invalidation_summary'):
+            data[field]['technical_evidence_ids'] = [fid]
+        data['supporting_technical_evidence_ids'] = []
+        data['conflicting_technical_evidence_ids'] = [fid]
+        original = deepcopy(data)
+        self.assertEqual(json.loads(_validate(data, packet)), original)
+        # Role fields do not exist inside statements; adding them is a schema error.
+        from src.horizon_synthesis import HorizonSynthesisError
+        data['agreement_explanation']['supporting_evidence_ids'] = [fid]
+        with self.assertRaises(HorizonSynthesisError) as caught: _validate(data, packet)
+        self.assertEqual(caught.exception.synthesis_failure_type, 'SCHEMA_VALIDATION')
+
+
+class TechnicalFeatureCitationTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No network'))
+        guard.start(); self.addCleanup(guard.stop)
+        self.helper = fixtures.TechnicalAnalystTests()
+        self.snapshot, self.catalog = self.helper.fixture(200)
+
+    def output(self, text, refs):
+        data = self.helper.output(self.catalog)
+        data['summary'] = dict(text=text, evidence_ids=refs)
+        return data
+
+    def test_every_catalog_label_statement_grounding(self):
+        from src.technical_analyst import FEATURE_FAMILIES, TechnicalValidationError
+        self.assertEqual(FEATURE_FAMILIES, {i.label for i in self.catalog.items})
+        for item in self.catalog.items:
+            unrelated = next(i.evidence_id for i in self.catalog.items if i.evidence_id != item.evidence_id)
+            for text in (item.label+' informs the interpretation.', '('+item.label.upper()+').'):
+                with self.subTest(label=item.label, text=text):
+                    self.helper.run_output(self.output(text, [item.evidence_id]), self.snapshot, self.catalog)
+                    with self.assertRaises(TechnicalValidationError) as caught:
+                        self.helper.run_output(self.output(text, [unrelated]), self.snapshot, self.catalog)
+                    self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_FEATURE_CITATION_MISSING')
+                    self.assertEqual(caught.exception.feature_family, item.label)
+            with self.assertRaises(TechnicalValidationError) as caught:
+                self.helper.run_output(self.output(item.label, []), self.snapshot, self.catalog)
+            self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_CITATION_INVALID')
+            data = self.output(item.label, [item.evidence_id])
+            data['supporting_evidence_ids'] = [unrelated]
+            data['conflicting_evidence_ids'] = [item.evidence_id]
+            self.helper.run_output(data, self.snapshot, self.catalog)
+            data['summary']['evidence_ids'] = [unrelated]
+            with self.assertRaises(TechnicalValidationError): self.helper.run_output(data, self.snapshot, self.catalog)
+            self.helper.run_output(self.output('The evidence is mixed.', [item.evidence_id]), self.snapshot, self.catalog)
+
+    def test_longer_label_regression_multiple_features_and_missing_data(self):
+        from src.technical_analyst import TechnicalValidationError
+        ids = {i.label:i.evidence_id for i in self.catalog.items}
+        for label in ('sma_200','close_vs_sma_20_pct','close_vs_sma_50_pct','close_vs_sma_200_pct'):
+            self.helper.run_output(self.output(label+' informs the thesis.', [ids[label]]), self.snapshot, self.catalog)
+        text = 'sma_200 and sma_20 inform the thesis.'
+        self.helper.run_output(self.output(text, [ids['sma_200'],ids['sma_20']]), self.snapshot, self.catalog)
+        with self.assertRaises(TechnicalValidationError) as caught:
+            self.helper.run_output(self.output(text, [ids['sma_200']]), self.snapshot, self.catalog)
+        self.assertEqual(caught.exception.feature_family, 'sma_20')
+        snapshot, catalog = self.helper.fixture(50)
+        data = self.helper.output(catalog)
+        data['summary']['text'] = 'sma_200 informs this view.'
+        with self.assertRaises(TechnicalValidationError) as caught: self.helper.run_output(data, snapshot, catalog)
+        self.assertEqual(caught.exception.feature_family, 'sma_200')
+        data['summary']['evidence_ids'] = [ids['sma_200']]
+        with self.assertRaises(TechnicalValidationError) as caught: self.helper.run_output(data, snapshot, catalog)
+        self.assertEqual(caught.exception.validation_reason, 'TECHNICAL_ANALYST_CITATION_INVALID')
+        data = self.helper.output(catalog)
+        data['missing_data_acknowledgement'] = 'sma_200 is unavailable.'
+        self.helper.run_output(data, snapshot, catalog)
+
+    def test_feature_family_reaches_combined_error_safely(self):
+        from src import technical_pipeline as backend, horizon_pipeline as pipeline
+        ids = {i.label:i.evidence_id for i in self.catalog.items}
+        data = self.output('sma_200 informs the view.', [ids['momentum_5']])
+        with patch.object(backend,'retrieve_historical_ohlcv',return_value=self.snapshot.historical_ohlcv), \
+             patch.object(backend, 'analyze_technical_snapshot', historical_generation.analyze_technical_snapshot), \
+             patch('src.openai_client.request_text',return_value=json.dumps(data)) as request, \
+             patch.object(pipeline,'run_stock_research') as fundamental, \
+             patch.object(pipeline,'synthesize_horizon') as synthesis, \
+             patch('sqlite3.connect',side_effect=AssertionError('No DB')):
+            with self.assertRaises(pipeline.HorizonPipelineError) as caught:
+                pipeline.run_horizon_research('TEST','MEDIUM',fundamental_horizon='MEDIUM',
+                    technical_as_of=self.snapshot.historical_ohlcv.requested_as_of,market_verified=True)
+            self.assertEqual(caught.exception.feature_family,'sma_200')
+            self.assertEqual(caught.exception.substage,'TECHNICAL_ANALYST')
+            self.assertEqual(caught.exception.error_type,'ValueError')
+            request.assert_called_once(); fundamental.assert_not_called(); synthesis.assert_not_called()
+        self.assertIsNone(backend.TechnicalResearchError('TECHNICAL_ANALYST','ValueError',
+            'TECHNICAL_ANALYST_FEATURE_CITATION_MISSING', 'SECRET').feature_family)
+
+    def test_broad_words_alias_limits_and_unchanged_numeric_rule(self):
+        from src.technical_analyst import TechnicalValidationError
+        ref = self.catalog.items[0].evidence_id
+        for text in ('trend remains constructive','momentum is improving','volume is elevated',
+                     'volatility increased','price remains above the moving average',
+                     'longer-term trend','short-term momentum','volume confirmation',
+                     'momentum evidence','trend evidence','RSI is elevated','MACD is rising'):
+            self.helper.run_output(self.output(text,[ref]), self.snapshot,self.catalog)
+        for text in ('SMA200','SMA-200','SMA 200','momentum20','RSI14','MACD 12/26/9'):
+            with self.assertRaises(TechnicalValidationError) as caught:
+                self.helper.run_output(self.output(text,[ref]),self.snapshot,self.catalog)
+            self.assertEqual(caught.exception.validation_reason,'TECHNICAL_ANALYST_NUMERIC_PROSE')
+
+
+class ContractConstructibilityAuditTests(unittest.TestCase):
+    def exercise_source_invalidations(self, fundamental_present=False, technical_present=False, horizon='MEDIUM', recommendation='Accumulate', technical_signal='NEUTRAL'):
+        """Real source parsers, prospective capture and readiness; no caller-set readiness."""
+        from src.analysis import _validate_analysis, build_analysis_schema
+        from src.research_pipeline import run_stock_research
+        from src.technical_signal_store import create_technical_signal_record
+        from src.horizon_integration import require_synthesis_ready
+        from src.horizon_synthesis import _packet, _validate, HorizonSynthesisError
+        from historical_generation import synthesize_horizon
+        with patch('socket.socket.connect', side_effect=AssertionError('No live network')), \
+             patch('sqlite3.connect', side_effect=AssertionError('No persistence')):
+            source = fundamental()
+            packet = json.loads(source.evidence_json)
+            packet['missing_data'] = []
+            raw = asdict(source.record)
+            raw.update(recommendation=recommendation, portfolio_assessment='No portfolio context.',
+                       material_evidence_review={}, thesis_invalidation_conditions=(raw['thesis_invalidation_conditions'] if fundamental_present else []))
+            raw = {key: raw[key] for key in build_analysis_schema(packet)['required']}
+            # Real source parser accepts the empty list; no invented provenance capability.
+            analysis = _validate_analysis(raw, packet)
+            captured = []
+            with patch('src.research_pipeline.build_stock_evidence', return_value=packet) as retrieval, \
+                 patch('src.research_pipeline.analyze_investment', return_value=analysis) as fundamental_call, \
+                 patch('src.research_pipeline.datetime') as clock:
+                clock.now.side_effect = [instant('2025-03-12T14:00:00+00:00'),
+                                        instant('2025-03-12T14:30:00+00:00'), instant()]
+                run_stock_research('TEST', persist_decision=False, investment_horizon='LONG' if horizon == 'LONG' else 'MEDIUM',
+                                   integration_run_id='run-1', on_fundamental_artifact=captured.append)
+                retrieval.assert_called_once()
+                fundamental_call.assert_called_once()
+            helper = fixtures.TechnicalAnalystTests()
+            snapshot, catalog = helper.fixture()
+            technical_output = helper.output(catalog, technical_signal)
+            if not technical_present:
+                technical_output['invalidation_conditions'] = []
+            signal = helper.run_output(technical_output, snapshot, catalog, select_technical_horizon(horizon))
+            record = create_technical_signal_record(signal, catalog,
+                created_at='2025-03-11T13:00:00Z', record_id='offline-no-invalidation')
+            context = build_integration_context('TEST', horizon, instant(),
+                fundamental=captured[0], technical=record, integration_run_id='run-1')
+            validated = require_synthesis_ready(context)
+            self.assertEqual(validated.readiness, 'SYNTHESIS_READY')
+            self.assertEqual(validated.blocking_missing_data, ())
+            synthesis_packet = _packet(validated)
+            self.assertTrue(synthesis_packet['conditions'])  # Confirmation still exists.
+            available = [key for key in synthesis_packet['conditions'] if 'INVALIDATION:' in key]
+            self.assertEqual(len(available), int(fundamental_present) + int(technical_present))
+            self.assertEqual(synthesis_packet['policy_versions']['invalidation'], 'source-available-invalidation-v1')
+            self.assertEqual('NO_SOURCE_INVALIDATION_CONDITION' in synthesis_packet['limitations'], not available)
+            before = (captured[0].analysis_json, record.signal_json)
+            for posture in synthesis_packet['allowed_postures']:
+                data = HorizonSynthesisTests().output(context, posture)
+                data['invalidation_summary']['condition_ids'] = available[:1]
+                data['invalidation_summary']['text'] = 'Source invalidation availability is retained.'
+                if not available:
+                    data['invalidation_summary']['classification'] = 'AI_INTERPRETATION'
+                if available and available[0].startswith('T_'):
+                    data['invalidation_summary']['technical_evidence_ids'] = synthesis_packet['conditions'][available[0]]['evidence_ids']
+                with patch('src.openai_client.request_text', return_value=json.dumps(data)) as request:
+                    view = synthesize_horizon(context)
+                    request.assert_called_once()
+                self.assertEqual(view.invalidation_policy_version, 'source-available-invalidation-v1')
+                self.assertEqual(view.context, validated)
+                self.assertEqual(view.context.primary_authority, primary_authority(horizon))
+                with self.assertRaises(FrozenInstanceError):
+                    view.invalidation_policy_version = 'modified'
+                self.assertEqual(before, (captured[0].analysis_json, record.signal_json))
+                if available:
+                    data['invalidation_summary']['condition_ids'] = []
+                    with self.assertRaises(HorizonSynthesisError) as caught:
+                        _validate(data, synthesis_packet)
+                    self.assertEqual(caught.exception.semantic_reason,
+                        'HORIZON_SYNTHESIS_INVALIDATION_REFERENCE_REQUIRED')
+                else:
+                    data['acknowledged_limitations'] = synthesis_packet['limitations'][:-1]
+                    with self.assertRaises(HorizonSynthesisError) as caught:
+                        _validate(data, synthesis_packet)
+                    self.assertEqual(caught.exception.semantic_reason, 'HORIZON_SYNTHESIS_LIMITATIONS_MISMATCH')
+                    data['acknowledged_limitations'] = synthesis_packet['limitations']
+                data['invalidation_summary']['condition_ids'] = ['T_CONFIRMATION:0']
+                with self.assertRaises(HorizonSynthesisError) as caught:
+                    _validate(data, synthesis_packet)
+                self.assertEqual(caught.exception.semantic_reason,
+                    'HORIZON_SYNTHESIS_INVALIDATION_REFERENCE_REQUIRED')
+                data['invalidation_summary']['condition_ids'] = ['F_INVALIDATION:999']
+                with self.assertRaises(HorizonSynthesisError) as caught:
+                    _validate(data, synthesis_packet)
+                self.assertEqual(caught.exception.synthesis_failure_type, 'INVALID_EVIDENCE_REFERENCE')
+
+    def test_ready_zero_invalidations_now_constructible(self):
+        self.exercise_source_invalidations()
+
+    def test_source_available_invalidation_combinations(self):
+        for fundamental_present, technical_present in ((True, True), (True, False), (False, True)):
+            with self.subTest(fundamental=fundamental_present, technical=technical_present):
+                self.exercise_source_invalidations(fundamental_present, technical_present)
+
+    def test_absence_across_authorities_and_permitted_postures(self):
+        for horizon in ('SHORT', 'SWING', 'MEDIUM', 'LONG'):
+            for recommendation in ('Accumulate', 'Avoid'):
+                with self.subTest(horizon=horizon, recommendation=recommendation):
+                    self.exercise_source_invalidations(horizon=horizon, recommendation=recommendation)
+
+    def test_prompt_contract_clarifications(self):
+        from src.horizon_synthesis import INSTRUCTIONS
+        from src.technical_analyst import INSTRUCTIONS as technical_prompt
+        for phrase in ('source-available-invalidation-v1', 'NO_SOURCE_INVALIDATION_CONDITION',
+                       'EACH namespace', 'including its ordering', 'confirmation IDs'):
+            self.assertIn(phrase, INSTRUCTIONS)
+        self.assertIn('at least one cited confirmation condition, including NEUTRAL', technical_prompt)
+
+
+class CompletedContractAuditTests(unittest.TestCase):
+    def setUp(self):
+        guard = patch('socket.socket.connect', side_effect=AssertionError('No live network'))
+        guard.start()
+        self.addCleanup(guard.stop)
+
+    def test_all_ready_direction_horizon_posture_combinations(self):
+        helper = ContractConstructibilityAuditTests()
+        for horizon in DecisionHorizon:
+            for recommendation in ('Accumulate', 'Hold', 'Avoid'):
+                for signal in ('BULLISH', 'NEUTRAL', 'BEARISH'):
+                    with self.subTest(horizon=horizon, recommendation=recommendation, signal=signal):
+                        helper.exercise_source_invalidations(True, True, horizon, recommendation, signal)
+
+    def test_response_extraction_detail_survives_real_client_and_combined_boundary(self):
+        from types import SimpleNamespace
+        from src import openai_client, horizon_synthesis, horizon_pipeline
+        real_request = openai_client.request_text
+        real_synthesis = historical_generation.synthesize_horizon
+        cases = [('incomplete', 'max_output_tokens', '{}', 'max_output_tokens'),
+                 ('incomplete', 'content_filter', '{}', 'content_filter'),
+                 ('incomplete', 'SECRET', '{}', 'not_completed'),
+                 ('completed', None, '', 'empty_output_text')]
+        def synthesis(context):
+            # Restore only the real request helper, whose SDK transport is mocked below.
+            with patch.object(openai_client, 'request_text', real_request):
+                return real_synthesis(context)
+        for status, reason, output, expected in cases:
+            with self.subTest(detail=expected), \
+                 patch.dict('os.environ', {'OPENAI_API_KEY': 'unit-test-placeholder'}), \
+                 patch.object(openai_client, 'OpenAI') as client, \
+                 patch.object(historical_generation, 'synthesize_horizon', side_effect=synthesis) as entry:
+                api = client.return_value.__enter__.return_value
+                api.responses.create.return_value = SimpleNamespace(status=status, output_text=output,
+                    incomplete_details=SimpleNamespace(reason=reason))
+                with self.assertRaises(horizon_pipeline.HorizonPipelineError) as caught:
+                    CombinedPipelineTests().exercise('MEDIUM', risks=True)
+                error = caught.exception
+                self.assertEqual(error.stage, 'HORIZON_SYNTHESIS')
+                self.assertEqual(error.failure_type, 'RESPONSE_EXTRACTION')
+                self.assertEqual(error.response_detail, expected)
+                self.assertNotIn('SECRET', str(error) + repr(vars(error)))
+                entry.assert_called_once()
+                api.responses.create.assert_called_once()
+                self.assertEqual(client.call_args.kwargs['max_retries'], 0)
+                self.assertFalse(api.responses.create.call_args.kwargs['store'])
+        self.assertIsNone(horizon_synthesis.HorizonSynthesisError('RESPONSE_EXTRACTION',
+            response_detail='SECRET').response_detail)
+
+    def test_clarified_horizon_cross_rule_contract(self):
+        from copy import deepcopy
+        from src.horizon_synthesis import _packet, _validate, HorizonSynthesisError
+        helper = HorizonSynthesisTests(); helper.setUp(); self.addCleanup(helper.doCleanups)
+        packet = _packet(helper.context)
+        data = helper.output(posture='WAIT_FOR_CONFIRMATION')
+        condition = packet['conditions']['T_CONFIRMATION:0']
+        data['synthesis_summary']['technical_evidence_ids'] = condition['evidence_ids']
+        data['supporting_technical_evidence_ids'] = []
+        data['conflicting_technical_evidence_ids'] = condition['evidence_ids']
+        data['synthesis_summary']['text'] = 'The evidence could strengthen.'
+        self.assertEqual(json.loads(_validate(data, packet)), data)
+        for change, code in [
+            (lambda d: d['synthesis_summary'].__setitem__('classification', 'AI_INTERPRETATION'), 'CONDITION_REQUIRES_FORECAST'),
+            (lambda d: d['synthesis_summary'].__setitem__('condition_ids', []), 'WAIT_CONDITION_REQUIRED'),
+            (lambda d: d.__setitem__('acknowledged_limitations', list(reversed(packet['limitations']))), 'LIMITATIONS_MISMATCH'),
+            (lambda d: d['synthesis_summary'].__setitem__('text', 'The evidence could improve 20%.'), 'NUMERIC_PROSE'),
+            (lambda d: d['synthesis_summary'].__setitem__('text', 'No portfolio action is proposed.'), 'PROHIBITED_ACTION_LANGUAGE')]:
+            invalid = deepcopy(data); change(invalid)
+            with self.assertRaises(HorizonSynthesisError) as caught:
+                _validate(invalid, packet)
+            self.assertEqual(caught.exception.semantic_reason, 'HORIZON_SYNTHESIS_' + code)
+
+    def test_prompt_instructions_for_nonobvious_rules(self):
+        from src.technical_analyst import INSTRUCTIONS as technical
+        from src.horizon_synthesis import INSTRUCTIONS as horizon
+        for phrase in ('unique exact catalog IDs', 'nonempty and disjoint', 'All statement text must be nonblank',
+                       'exactly all unavailable IDs', 'risk_notes may'):
+            self.assertIn(phrase, technical)
+        for phrase in ('unique exact IDs', 'ALL of its original evidence_refs', 'matching available Technical',
+                       'synthesis_summary itself', 'quoted, negated', 'will, expect, forecast, predict, would or could'):
+            self.assertIn(phrase, horizon)

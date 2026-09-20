@@ -1,6 +1,17 @@
 # V0.8A Step 3A — Freshness & Provenance Policy Design
 
-## Status and authority
+> Current release status: active generation is `technical-analyst-v2` and
+> `horizon-synthesis-v2` under `evidence-first-assembly-v1`. Historical v1
+> consumption remains supported. Earlier step-specific status statements below
+> are historical. G3 validated provider acceptance and one-shot compliance for one
+> controlled NVDA/MEDIUM execution; it did not validate investment accuracy or
+> long-term reliability. No retries/fallback/repair or semantic-entailment guarantee.
+> Research-only V0.8A is ready for separately authorized release publication;
+> portfolio-aware decision context remains future V0.8B work. See the
+> [release checkpoint](V0_8A_RELEASE_CHECKPOINT.md).
+
+
+## Historical design status and authority
 
 Design only. This document specifies the user-approved Technical V1 boundaries and
 the prospective Fundamental provenance/currentness policy. It supplements the

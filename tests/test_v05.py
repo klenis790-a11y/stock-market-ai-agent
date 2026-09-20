@@ -1159,3 +1159,26 @@ class ProviderOperationDiagnosticTests(unittest.TestCase):
         with patch.dict('os.environ',{'ALPHA_VANTAGE_API_KEY':'fixture'}), patch('src.alpha_vantage_client._pace_request'), patch('src.alpha_vantage_client.urlopen',return_value=io.BytesIO(b'{"Symbol":"AAPL"}')) as network:
             self.assertEqual(api.get_company_overview('AAPL'),{'Symbol':'AAPL'})
             network.assert_called_once()
+
+
+class OptionalSourceDiagnosticSafetyTests(unittest.TestCase):
+    def test_optional_source_warnings_withhold_provider_body(self):
+        import io
+        import json
+        from src import alpha_vantage_client as api
+        from src.research_pipeline import _retrieve_optional
+        for function,args in ((api.get_global_quote,('TEST',)),
+                              (api.get_news_sentiment,('TEST',)),
+                              (api.get_earnings_call_transcript,('TEST','2025Q1'))):
+            with self.subTest(operation=function.__name__), \
+                 patch.dict('os.environ',{'ALPHA_VANTAGE_API_KEY':'fixture-secret'}), \
+                 patch.object(api,'_pace_request'), \
+                 patch.object(api,'urlopen',return_value=io.BytesIO(json.dumps({'Information':'fixture-secret PRIVATE_PROVIDER_BODY'}).encode())) as transport, \
+                 self.assertLogs(level='WARNING') as logs:
+                self.assertEqual(_retrieve_optional(function,*args),{})
+                transport.assert_called_once()
+            text=' '.join(logs.output)
+            self.assertIn('provider_response_type=INFORMATION',text)
+            self.assertIn('Optional Fundamental source unavailable; detail=withheld.',text)
+            self.assertNotIn('PRIVATE_PROVIDER_BODY',text)
+            self.assertNotIn('fixture-secret',text)

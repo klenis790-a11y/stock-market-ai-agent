@@ -1,4 +1,5 @@
 """Technical dashboard actions with synthetic evidence, temporary DBs and zero live IO."""
+from src import technical_pipeline as backend
 import unittest
 import tempfile
 from pathlib import Path
@@ -39,15 +40,15 @@ class TechnicalDashboardTests(unittest.TestCase):
 
     def test_explicit_pipeline_single_asof_horizon_and_stages(self):
         bundle=self.bundle(adapter.HORIZONS[1]);data=bundle.snapshot.historical_ohlcv
-        with patch.object(adapter,'retrieve_historical_ohlcv',return_value=data) as retrieval, patch.object(
-            adapter,'analyze_technical_snapshot',return_value=bundle.signal) as analyst:
+        with patch.object(backend,'retrieve_historical_ohlcv',return_value=data) as retrieval, patch.object(
+            backend,'analyze_technical_snapshot',return_value=bundle.signal) as analyst:
             result=adapter.run_technical_research(' test ',adapter.HORIZONS[1],data.requested_as_of,market_verified=True)
             retrieval.assert_called_once_with('TEST',data.requested_as_of,market='US_EQUITY_ETF_XNYS')
             analyst.assert_called_once()
             self.assertEqual(analyst.call_args.args[2],adapter.HORIZONS[1])
             self.assertEqual(result.catalog.provenance.requested_as_of,data.requested_as_of)
             self.assertEqual(result.signal,bundle.signal)
-        with patch.object(adapter,'retrieve_historical_ohlcv') as retrieval:
+        with patch.object(backend,'retrieve_historical_ohlcv') as retrieval:
             for horizon,verified in (('invalid',True),(adapter.HORIZONS[0],False)):
                 with self.assertRaises(adapter.TechnicalActionError):adapter.run_technical_research('TEST',horizon,data.requested_as_of,market_verified=verified)
             retrieval.assert_not_called()
@@ -166,7 +167,7 @@ class TechnicalDashboardTests(unittest.TestCase):
         bundle=self.bundle();data=bundle.snapshot.historical_ohlcv
         for stage,name in (('MARKET_DATA','retrieve_historical_ohlcv'),('FEATURES','build_technical_feature_snapshot'),
                            ('EVIDENCE','build_technical_evidence_catalog'),('TECHNICAL_ANALYST','analyze_technical_snapshot')):
-            with patch.object(adapter,'retrieve_historical_ohlcv',return_value=data),patch.object(adapter,name,side_effect=RuntimeError('SECRET raw prompt provider body')), self.assertLogs('src.dashboard.technical_adapter',level='ERROR') as logs:
+            with patch.object(backend,'retrieve_historical_ohlcv',return_value=data),patch.object(backend,name,side_effect=RuntimeError('SECRET raw prompt provider body')), self.assertLogs('src.dashboard.technical_adapter',level='ERROR') as logs:
                 with self.assertRaises(adapter.TechnicalActionError) as caught:adapter.run_technical_research('TEST',adapter.HORIZONS[0],data.requested_as_of,market_verified=True)
             self.assertIn('stage='+stage,logs.output[0]);self.assertNotIn('SECRET',logs.output[0]);self.assertNotIn('SECRET',str(caught.exception))
         record=adapter.prepare_save(bundle,dt('2025-03-11T13:00:00Z'))

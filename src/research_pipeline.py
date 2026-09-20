@@ -20,9 +20,10 @@ from src.research_snapshot import build_research_snapshot
 def _retrieve_optional(function, *args) -> dict:
     try:
         return function(*args)
-    except RuntimeError as error:
-        # The existing client supplies secret-safe diagnostics.
-        logging.getLogger(__name__).warning("%s unavailable: %s", function.__name__, error)
+    except RuntimeError:
+        # Provider message text may contain arbitrary payload despite secret redaction.
+        # The client already logs fixed operation/classification metadata.
+        logging.getLogger(__name__).warning("Optional Fundamental source unavailable; detail=withheld.")
         return {}
 
 

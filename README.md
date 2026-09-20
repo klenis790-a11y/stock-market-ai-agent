@@ -335,6 +335,22 @@ V0.8A [Step 5B sequencing](docs/V0_8A_HORIZON_SYNTHESIS_DESIGN.md#step-5b--combi
 
 V0.8A [Step 5 combined research](docs/V0_8A_COMBINED_RESEARCH.md) now coordinates Technical-first research, prospective Fundamental provenance, trusted readiness and Horizon Synthesis. Dashboard/persistence remain pending.
 
-V0.8A [risk-applicability-v1](docs/V0_8A_FRESHNESS_PROVENANCE_POLICY.md#step-6a--risk-applicability) preserves valid adverse evidence as synthesis input without weakening independent readiness gates. Release review and live validation remain pending.
+V0.8A [risk-applicability-v1](docs/V0_8A_FRESHNESS_PROVENANCE_POLICY.md#step-6a--risk-applicability) preserves valid adverse evidence without weakening independent readiness gates.
 
-V0.8A [final backend checkpoint](docs/V0_8A_RELEASE_CHECKPOINT.md): 479 tests pass and Technical orchestration is shared by backend and dashboard. Release sign-off is **NOT READY**: the single controlled live attempt failed at Horizon Synthesis before its OpenAI request; diagnosis remains pending.
+V0.8A [source-available-invalidation-v1](docs/V0_8A_HORIZON_SYNTHESIS_AGENT.md#step-6r--source-available-invalidation)
+requires source invalidation references when present and an explicit absence limitation
+when absent, without inventing conditions or changing readiness.
+
+Active generation uses `technical-analyst-v2` and `horizon-synthesis-v2` under
+`evidence-first-assembly-v1`: one model draft → deterministic validation/assembly →
+public validation. Historical v1 consumption remains supported, with no automatic
+conversion, fallback, retry or repair pass. Assembly does not prove semantic entailment.
+
+The [final release checkpoint](docs/V0_8A_RELEASE_CHECKPOINT.md#final-v08a-release-review)
+records 556 passing tests and the successful single controlled G3 NVDA/MEDIUM run.
+Provider acceptance and Technical/Horizon one-shot compliance were demonstrated for
+that attempt only, not investment accuracy or long-term reliability. Its conclusions
+are historical validation artifacts, not current recommendations.
+
+V0.8A is research-only and ready for separately authorized commit/tag/push; none has
+been performed. Portfolio-aware decision context belongs to future V0.8B.

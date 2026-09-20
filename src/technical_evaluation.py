@@ -16,6 +16,7 @@ from src.observation_resolution import (adjusted_close_methodology, _resolve_clo
     PRICE_POLICY_VERSION, SUPPORTED_MARKET)
 from src.market_calendar import USMarketCalendar, aware_utc
 from src.technical_signal_store import TechnicalSignalRecord
+from src.generation_contracts import SUPPORTED_TECHNICAL_ARTIFACT_VERSIONS
 
 EVALUATION_VERSION = 'technical-signal-evaluation-v1'
 HORIZON_MAP_VERSION = 'technical-signal-horizon-map-v1'
@@ -80,11 +81,13 @@ def _validate_source(record, enrollment=None):
     replace(record)  # Revalidate stored shape without rerunning evidence or analysis.
     signal = record.signal
     p = signal['provenance']
+    if signal['analyst_methodology_version'] not in SUPPORTED_TECHNICAL_ARTIFACT_VERSIONS:
+        raise ValueError('Unsupported historical technical methodology.')
     if (p['market_data_methodology'], p['feature_methodology'], signal['evidence_catalog_version'],
-        signal['analyst_methodology_version'], p['adjustment_mode'], p['timeframe'], p['calendar'],
+        p['adjustment_mode'], p['timeframe'], p['calendar'],
         p['exchange_timezone'], p['calendar_version']) != (
         'daily-ohlcv-normalization-v1', 'technical-features-v1', 'technical-evidence-v1',
-        'technical-analyst-v1', 'RAW', '1d', 'XNYS', 'America/New_York', USMarketCalendar.version):
+        'RAW', '1d', 'XNYS', 'America/New_York', USMarketCalendar.version):
         raise ValueError('Unsupported historical technical methodology.')
     as_of = aware_utc(datetime.fromisoformat(p['requested_as_of'].replace('Z', '+00:00')))
     retrieved = utc_timestamp(p['retrieved_at'])

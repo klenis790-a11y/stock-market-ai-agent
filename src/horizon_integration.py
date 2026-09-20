@@ -15,6 +15,7 @@ from src.market_calendar import USMarketCalendar, aware_utc
 from src.market_data_models import normalize_symbol
 from src.models import DecisionRecord
 from src.technical_signal_store import TechnicalSignalRecord
+from src.generation_contracts import SUPPORTED_TECHNICAL_ARTIFACT_VERSIONS
 from src.technical_features import PARAMETERS
 
 CONTEXT_VERSION = 'horizon-synthesis-context-v1'
@@ -320,7 +321,7 @@ def admit_technical(record, ticker, integration_as_of, *, calendar=None):
                 'calendar_version': USMarketCalendar.version}
     if (any(p.get(k) != v for k, v in expected.items()) or
             signal['evidence_catalog_version'] != 'technical-evidence-v1' or
-            signal['analyst_methodology_version'] != 'technical-analyst-v1' or
+            signal['analyst_methodology_version'] not in SUPPORTED_TECHNICAL_ARTIFACT_VERSIONS or
             p.get('indicator_parameters') != json.loads(canonical_json(PARAMETERS))):
         reasons.append('UNSUPPORTED_METHODOLOGY')
     research_time = None
